@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=Pi Media Hub Player
+Exec=chromium --kiosk --noerrdialogs --disable-infobars --autoplay-policy=no-user-gesture-required http://localhost:3000/player.html

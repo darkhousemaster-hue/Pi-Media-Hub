@@ -1,0 +1,31 @@
+{
+  "slideshow": {
+    "defaultDuration": 5,
+    "transitionDuration": 1,
+    "transitionEffect": "fade",
+    "easing": "ease-in-out",
+    "autoAdvance": true,
+    "loop": true,
+    "randomOrder": false,
+    "pauseBetweenCycles": 0,
+    "speedPreset": "normal",
+    "layout": "grid-5"
+  },
+  "video": {
+    "intervalMinutes": 1,
+    "enabled": true
+  },
+  "audio": {
+    "masterVolume": 74,
+    "musicVolume": 58,
+    "intervalVideoVolume": 100,
+    "instructionVideoVolume": 25,
+    "enabled": true,
+    "volume": 4
+  },
+  "display": {
+    "output": "auto",
+    "resolution": "auto"
+  },
+  "individualTiming": {}
+}

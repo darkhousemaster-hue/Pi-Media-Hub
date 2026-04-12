@@ -1,0 +1,29 @@
+{
+  "name": "pi-media-hub",
+  "version": "1.0.0",
+  "description": "Raspberry Pi Media Hub - Slideshow, Music & Video Manager",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "concurrently -n SERVER,CLIENT -c bgBlue.bold,bgGreen.bold \"node server.js\" \"vite\"",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "socket.io": "^4.6.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.0.4",
+    "concurrently": "^8.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "socket.io-client": "^4.6.2",
+    "vite": "^4.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

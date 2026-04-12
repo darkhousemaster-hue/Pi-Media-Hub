@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pi Media Hub — Player</title>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    html,body{background:#000;width:100%;height:100%;overflow:hidden;max-width:100vw;max-height:100vh;font-family:system-ui,sans-serif;cursor:none;}
+
+    #stage{position:fixed;inset:0;background:#000;--td:1s;--ease:ease-in-out;}
+    .frame{position:absolute;inset:0;}
+    .frame.entering{z-index:2;} .frame.leaving{z-index:1;}
+
+    .view{position:absolute;inset:0;display:grid;gap:4px;background:#000;overflow:hidden;}
+    .view img{width:100%;height:100%;object-fit:contain;display:block;min-height:0;min-width:0;background:#000;}
+
+    .layout-single{grid-template-columns:1fr;grid-template-rows:1fr;gap:0;}
+    .layout-grid-2h{grid-template-columns:1fr 1fr;grid-template-rows:1fr;}
+    .layout-grid-2v{grid-template-columns:1fr;grid-template-rows:1fr 1fr;}
+    .layout-grid-3{grid-template-columns:2fr 1fr;grid-template-rows:1fr 1fr;}
+    .layout-grid-3 img:first-child{grid-row:span 2;}
+    .layout-grid-4{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;}
+    .layout-grid-5{grid-template-columns:2fr 1fr;grid-template-rows:repeat(4,1fr);}
+    .layout-grid-5 img:first-child{grid-row:span 4;}
+    .layout-grid-6{grid-template-columns:1fr 1fr 1fr;grid-template-rows:1fr 1fr;}
+    .layout-grid-8{grid-template-columns:repeat(4,1fr);grid-template-rows:1fr 1fr;}
+    .layout-grid-9{grid-template-columns:1fr 1fr 1fr;grid-template-rows:1fr 1fr 1fr;}
+    .layout-focus{grid-template-columns:1fr 1fr 1fr;grid-template-rows:3fr 1fr;}
+    .layout-focus img:first-child{grid-column:span 3;}
+    .layout-triptych{grid-template-columns:1fr 1.4fr 1fr;grid-template-rows:1fr;}
+
+    /* Transitions */
+    .fx-fade .frame.entering{animation:fadeIn var(--td) var(--ease) forwards;}
+    .fx-fade .frame.leaving {animation:fadeOut var(--td) var(--ease) forwards;}
+    @keyframes fadeIn {from{opacity:0}to{opacity:1}}
+    @keyframes fadeOut{from{opacity:1}to{opacity:0}}
+    .fx-slide .frame.entering{animation:slideIn var(--td) var(--ease) forwards;}
+    .fx-slide .frame.leaving {animation:slideOut var(--td) var(--ease) forwards;}
+    @keyframes slideIn {from{transform:translateX(100%)}to{transform:translateX(0)}}
+    @keyframes slideOut{from{transform:translateX(0)}to{transform:translateX(-100%)}}
+    .fx-zoom .frame.entering{animation:zoomIn var(--td) var(--ease) forwards;}
+    .fx-zoom .frame.leaving {animation:fadeOut var(--td) var(--ease) forwards;}
+    @keyframes zoomIn{from{opacity:0;transform:scale(1.1)}to{opacity:1;transform:scale(1)}}
+    .fx-wipe .frame.entering{animation:wipeIn var(--td) var(--ease) forwards;z-index:3;}
+    @keyframes wipeIn{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0% 0 0)}}
+    .fx-dissolve .frame.entering{animation:dissolveIn var(--td) var(--ease) forwards;}
+    .fx-dissolve .frame.leaving {animation:fadeOut var(--td) var(--ease) forwards;}
+    @keyframes dissolveIn{from{opacity:0;filter:blur(14px)saturate(0)}to{opacity:1;filter:blur(0)saturate(1)}}
+    .fx-flip .frame.entering{animation:flipIn var(--td) var(--ease) forwards;}
+    .fx-flip .frame.leaving {animation:flipOut var(--td) var(--ease) forwards;}
+    @keyframes flipIn {from{opacity:0;transform:perspective(1200px)rotateY(-80deg)}to{opacity:1;transform:perspective(1200px)rotateY(0)}}
+    @keyframes flipOut{from{opacity:1;transform:perspective(1200px)rotateY(0)}to{opacity:0;transform:perspective(1200px)rotateY(80deg)}}
+    .fx-push .frame.entering{animation:slideIn var(--td) var(--ease) forwards;}
+    .fx-push .frame.leaving {animation:slideOut var(--td) var(--ease) forwards;}
+    .fx-cube .frame.entering{animation:cubeIn var(--td) var(--ease) forwards;}
+    .fx-cube .frame.leaving {animation:cubeOut var(--td) var(--ease) forwards;}
+    @keyframes cubeIn {from{opacity:.1;transform:perspective(1200px)rotateY(-90deg)translateZ(40vw)}to{opacity:1;transform:perspective(1200px)rotateY(0)translateZ(0)}}
+    @keyframes cubeOut{from{opacity:1;transform:perspective(1200px)rotateY(0)translateZ(0)}to{opacity:.1;transform:perspective(1200px)rotateY(90deg)translateZ(40vw)}}
+
+    #video-overlay{position:fixed;inset:0;background:#000;z-index:100;display:none;align-items:center;justify-content:center;}
+    #video-overlay.visible{display:flex;}
+    #video-el{width:100%;height:100%;object-fit:contain;}
+
+    #paused-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px;}
+    #paused-overlay.visible{display:flex;}
+
+    /* Waiting screen — shown when no pictures uploaded yet */
+    #waiting{position:fixed;inset:0;z-index:300;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;color:rgba(255,255,255,.5);}
+    #waiting.hidden{display:none;}
+    #waiting .w-icon{font-size:56px;opacity:.4;}
+    #waiting .w-title{font-size:22px;font-weight:300;letter-spacing:2px;}
+    #waiting .w-url{font-family:monospace;font-size:14px;background:rgba(255,255,255,.08);padding:8px 20px;border-radius:8px;color:rgba(255,255,255,.6);}
+    #waiting .w-status{font-size:13px;opacity:.4;}
+  </style>
+</head>
+<body>
+
+<div id="stage" class="fx-fade"></div>
+<div id="video-overlay"><video id="video-el" autoplay playsinline></video></div>
+<div id="paused-overlay">
+  <div style="width:80px;height:80px;background:rgba(255,255,255,.12);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:32px;backdrop-filter:blur(12px);">⏸</div>
+  <div style="color:rgba(255,255,255,.7);font-size:22px;letter-spacing:5px;text-transform:uppercase;font-weight:300;">Paused</div>
+</div>
+<div id="waiting">
+  <div class="w-icon">🖼️</div>
+  <div class="w-title">No pictures yet</div>
+  <div class="w-url" id="ctrl-url">http://localhost:3000</div>
+  <div class="w-status" id="ctrl-status">Open the control interface to upload pictures</div>
+</div>
+<audio id="audio-el"></audio>
+
+<script>
+window.SERVER = (window.location.port === '5173')
+  ? window.location.protocol + '//' + window.location.hostname + ':3000'
+  : window.location.origin;
+</script>
+<script src="/socket.io/socket.io.js" onerror="
+  var s=document.createElement('script');
+  s.src=window.SERVER+'/socket.io/socket.io.js';
+  document.head.appendChild(s);
+"></script>
+<script>
+'use strict';
+
+// ── State ──────────────────────────────────────────────────────────────────
+let slides=[], videos=[], music=[], config={};
+let currentBatch=0, currentMusic=0;
+let isPaused=false, isVideoActive=false, isInstruction=false;
+let slideshowTimer=null, videoScheduleTimer=null;
+let musicStarted=false;
+
+// ── DOM ────────────────────────────────────────────────────────────────────
+const stage         = document.getElementById('stage');
+const videoOverlay  = document.getElementById('video-overlay');
+const videoEl       = document.getElementById('video-el');
+const audioEl       = document.getElementById('audio-el');
+const pausedOverlay = document.getElementById('paused-overlay');
+const waitingEl     = document.getElementById('waiting');
+const ctrlUrl       = document.getElementById('ctrl-url');
+const ctrlStatus    = document.getElementById('ctrl-status');
+
+// ── Volume ─────────────────────────────────────────────────────────────────
+function vol(cat){ const m=(config.audio?.masterVolume??75)/100; return Math.max(0,Math.min(1,m*((config.audio?.[cat]??100)/100))); }
+function applyAudio(){ audioEl.volume=vol('musicVolume'); }
+function applyVideo(instr){ videoEl.volume=instr?vol('instructionVideoVolume'):vol('intervalVideoVolume'); }
+
+// ── Layout ─────────────────────────────────────────────────────────────────
+const SIZES={'single':1,'grid-2h':2,'grid-2v':2,'triptych':3,'grid-3':3,'grid-4':4,'focus':4,'grid-5':5,'grid-6':6,'grid-8':8,'grid-9':9};
+function gs(){ return SIZES[config.slideshow?.layout||'single']||1; }
+
+function buildFrame(idx){
+  const layout=config.slideshow?.layout||'single';
+  const frame=document.createElement('div'); frame.className='frame';
+  const view=document.createElement('div');  view.className=`view layout-${layout}`;
+  const n=gs();
+  for(let i=0;i<n;i++){
+    const img=document.createElement('img');
+    img.src=slides[(idx+i)%slides.length]; img.alt='';
+    view.appendChild(img);
+  }
+  frame.appendChild(view); return frame;
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────
+function renderBatch(instant){
+  if(!slides.length) return;
+  const incoming=buildFrame(currentBatch);
+  const old=stage.querySelector('.frame');
+  if(instant||!old){ stage.innerHTML=''; stage.appendChild(incoming); }
+  else {
+    const td=(config.slideshow?.transitionDuration||1)*1000;
+    incoming.classList.add('entering');
+    stage.appendChild(incoming);
+    if(old){ old.classList.add('leaving'); setTimeout(()=>old.remove(),td+100); }
+    setTimeout(()=>incoming.classList.remove('entering'),td+100);
+  }
+  emitState();
+}
+
+function advance(){
+  if(!slides.length||isPaused||isVideoActive) return;
+  currentBatch=(currentBatch+gs())%slides.length;
+  renderBatch(false);
+}
+
+// ── Slideshow ──────────────────────────────────────────────────────────────
+function startSlideshow(){
+  clearInterval(slideshowTimer); slideshowTimer=null;
+  if(!slides.length||config.slideshow?.autoAdvance===false) return;
+  slideshowTimer=setInterval(advance,(config.slideshow?.defaultDuration||5)*1000);
+  scheduleVideo();
+}
+function stopSlideshow(){ clearInterval(slideshowTimer); slideshowTimer=null; }
+
+// ── Video ──────────────────────────────────────────────────────────────────
+function scheduleVideo(){
+  clearTimeout(videoScheduleTimer);
+  if(!config.video?.enabled||!videos.length) return;
+  const ms=(config.video?.intervalMinutes||5)*60*1000;
+  videoScheduleTimer=setTimeout(()=>{ if(!isPaused) playVideo(videos[Math.floor(Math.random()*videos.length)],false); else scheduleVideo(); },ms);
+}
+
+function playVideo(url,instr){
+  isVideoActive=true; isInstruction=!!instr;
+  stopSlideshow(); audioEl.pause();
+  videoEl.src=url; applyVideo(instr);
+  videoOverlay.classList.add('visible');
+  videoEl.play().catch(()=>{});
+  socket.emit('state-update',{mode:'video',status:'playing'});
+  videoEl.onended=videoEl.onerror=onVideoEnded;
+}
+
+function onVideoEnded(){
+  videoOverlay.classList.remove('visible'); videoEl.src='';
+  isVideoActive=false; isInstruction=false;
+  if(!isPaused){ applyAudio(); audioEl.play().catch(()=>{}); startSlideshow(); socket.emit('state-update',{mode:'slideshow',status:'playing'}); }
+  scheduleVideo();
+}
+
+function stopVideoNow(){
+  if(!isVideoActive) return;
+  videoEl.pause(); videoEl.src='';
+  videoOverlay.classList.remove('visible');
+  isVideoActive=false; isInstruction=false;
+  clearTimeout(videoScheduleTimer);
+}
+
+// ── Music ──────────────────────────────────────────────────────────────────
+function startMusic(){
+  if(!music.length||( musicStarted&&!audioEl.ended&&!audioEl.paused)) return;
+  musicStarted=true; currentMusic=0;
+  audioEl.src=music[0]; applyAudio();
+  audioEl.play().catch(()=>{
+    // Store for retry on first interaction (dev browser policy)
+    window._pendingAudio=()=>audioEl.play().catch(()=>{});
+  });
+  audioEl.onended=()=>{
+    currentMusic=(currentMusic+1)%music.length;
+    audioEl.src=music[currentMusic]; applyAudio();
+    audioEl.play().catch(()=>{});
+  };
+}
+
+// ── Config ─────────────────────────────────────────────────────────────────
+function applyConfig(){
+  const fx=['fade','slide','zoom','wipe','push','dissolve','flip','cube'].includes(config.slideshow?.transitionEffect)?config.slideshow.transitionEffect:'fade';
+  stage.style.setProperty('--td',(config.slideshow?.transitionDuration||1)+'s');
+  stage.style.setProperty('--ease',config.slideshow?.easing||'ease-in-out');
+  stage.className=`fx-${fx}`;
+  applyAudio();
+  if(isVideoActive) applyVideo(isInstruction);
+}
+
+// ── Emit state ─────────────────────────────────────────────────────────────
+function emitState(){
+  const n=gs();
+  const urls=slides.length?Array.from({length:n},(_,i)=>slides[(currentBatch+i)%slides.length]):[];
+  socket.emit('state-update',{
+    currentSlide:currentBatch, currentSlideUrl:slides[currentBatch]||null,
+    currentSlideUrls:urls, totalSlides:slides.length,
+    status:isPaused?'paused':'playing', mode:isVideoActive?'video':'slideshow'
+  });
+}
+
+// ── Commands ───────────────────────────────────────────────────────────────
+function handleCommand(cmd){
+  switch(cmd.action){
+    case 'play':
+      isPaused=false; pausedOverlay.classList.remove('visible');
+      if(isVideoActive){ videoEl.play().catch(()=>{}); }
+      else { applyAudio(); audioEl.play().catch(()=>{}); startSlideshow(); }
+      break;
+    case 'pause':
+      if(isPaused){
+        isPaused=false; pausedOverlay.classList.remove('visible');
+        if(isVideoActive) videoEl.play().catch(()=>{});
+        else { applyAudio(); audioEl.play().catch(()=>{}); startSlideshow(); }
+      } else {
+        isPaused=true; pausedOverlay.classList.add('visible');
+        audioEl.pause(); stopSlideshow();
+        if(isVideoActive) videoEl.pause();
+      }
+      break;
+    case 'stop':
+      stopVideoNow(); isPaused=true; pausedOverlay.classList.add('visible');
+      audioEl.pause(); stopSlideshow(); clearTimeout(videoScheduleTimer); break;
+    case 'next':
+      currentBatch=(currentBatch+gs())%Math.max(slides.length,1); renderBatch(false); break;
+    case 'restart-slideshow':
+      stopVideoNow(); isPaused=false; pausedOverlay.classList.remove('visible');
+      currentBatch=0; renderBatch(true);
+      musicStarted=false; currentMusic=0;
+      if(music.length){ audioEl.src=music[0]; applyAudio(); audioEl.play().catch(()=>{}); }
+      clearInterval(slideshowTimer);
+      slideshowTimer=setInterval(advance,(config.slideshow?.defaultDuration||5)*1000);
+      scheduleVideo(); break;
+    case 'play-instruction':
+      if(cmd.url){ isPaused=false; pausedOverlay.classList.remove('visible'); playVideo(cmd.url,true); }
+      break;
+  }
+  emitState();
+}
+
+// ── Keyboard ───────────────────────────────────────────────────────────────
+document.addEventListener('keydown',e=>{
+  const m={' ':'pause',ArrowRight:'next',r:'restart-slideshow',R:'restart-slideshow'};
+  if(m[e.key]){ e.preventDefault(); handleCommand({action:m[e.key]}); }
+});
+
+// ── Socket ─────────────────────────────────────────────────────────────────
+const socket=io(window.SERVER,{transports:['websocket','polling']});
+socket.on('config',        cfg=>{ config=cfg; applyConfig(); });
+socket.on('config-update', cfg=>{ config=cfg; applyConfig(); if(slides.length&&!isVideoActive&&!isPaused) startSlideshow(); });
+socket.on('command',       handleCommand);
+socket.on('media-updated', loadMedia);
+
+// ── Load media ─────────────────────────────────────────────────────────────
+async function loadMedia(){
+  try {
+    const [pics,vids,mus]=await Promise.all([
+      fetch(window.SERVER+'/api/files/pictures').then(r=>r.json()),
+      fetch(window.SERVER+'/api/files/videos').then(r=>r.json()),
+      fetch(window.SERVER+'/api/files/music').then(r=>r.json()),
+    ]);
+    slides=pics.map(f=>f.url);
+    videos=vids.map(f=>f.url);
+    music =mus.map(f=>f.url);
+
+    if(config.slideshow?.randomOrder){
+      for(let i=slides.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [slides[i],slides[j]]=[slides[j],slides[i]]; }
+    }
+
+    if(slides.length>0){
+      waitingEl.classList.add('hidden');
+      currentBatch=0;
+      renderBatch(true);
+      startMusic();
+      startSlideshow();
+      emitState();
+    } else {
+      // Show waiting screen — auto-retry every 10s
+      waitingEl.classList.remove('hidden');
+      ctrlStatus.textContent='Waiting for pictures… will start automatically when uploaded.';
+      setTimeout(loadMedia, 10000);
+    }
+  } catch(err){
+    ctrlStatus.textContent='Connection error — retrying…';
+    setTimeout(loadMedia,5000);
+  }
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+async function boot(){
+  try {
+    const [cfg,st,net]=await Promise.all([
+      fetch(window.SERVER+'/api/config').then(r=>r.json()),
+      fetch(window.SERVER+'/api/status').then(r=>r.json()).catch(()=>({})),
+      fetch(window.SERVER+'/api/network').then(r=>r.json()).catch(()=>({})),
+    ]);
+    config=cfg; applyConfig();
+    if(net.ip) ctrlUrl.textContent=`http://${net.ip}:${net.port||3000}`;
+    await loadMedia();
+  } catch(err){
+    ctrlStatus.textContent='Server not ready — retrying…';
+    setTimeout(boot,3000);
+  }
+}
+
+boot();
+</script>
+</body>
+</html>
