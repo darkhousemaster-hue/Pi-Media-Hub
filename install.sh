@@ -1,6 +1,6 @@
 #!/bin/bash
-# Pi Media Hub — Install/Fix script
-# Run this on the Pi: bash install.sh
+# Pi Media Hub — Install script
+# Run from inside the pi-media-hub folder: bash install.sh
 
 set -e
 USER_NAME=$(whoami)
@@ -8,21 +8,30 @@ INSTALL_DIR=$(pwd)
 
 echo ""
 echo "╔══════════════════════════════════════╗"
-echo "║     Pi Media Hub — Install           ║"
-echo "║     User: $USER_NAME"
+echo "║   Pi Media Hub — Install v1.0.1      ║"
+echo "║   User: $USER_NAME"
 echo "╚══════════════════════════════════════╝"
 echo ""
 
-# ── 1. Build the app ───────────────────────────────────────────────────────
-echo "📦 Installing dependencies and building..."
-npm install --silent
-npm run build
+# ── 1. Restore uploads backup if it exists ────────────────────────────────
+if [ -d "$HOME/pi-media-hub-uploads-backup" ] && [ ! -d "$INSTALL_DIR/uploads/pictures" ]; then
+  echo "📦 Restoring uploads backup..."
+  cp -r "$HOME/pi-media-hub-uploads-backup/." "$INSTALL_DIR/uploads/"
+  echo "✓ Uploads restored"
+fi
 
+# ── 2. Create upload dirs ──────────────────────────────────────────────────
+mkdir -p uploads/pictures uploads/videos uploads/music uploads/instructionvideos
+
+# ── 3. Build ───────────────────────────────────────────────────────────────
+echo "📦 Installing dependencies..."
+npm install --silent
+echo "🔨 Building..."
+npm run build
 echo "✓ Build complete"
 
-# ── 2. Create systemd service with correct user ────────────────────────────
-echo "🔧 Installing systemd service..."
-
+# ── 4. Systemd service ────────────────────────────────────────────────────
+echo "🔧 Installing service..."
 sudo tee /etc/systemd/system/pi-media-hub.service > /dev/null << SVCEOF
 [Unit]
 Description=Pi Media Hub
@@ -45,31 +54,30 @@ sudo systemctl daemon-reload
 sudo systemctl enable pi-media-hub
 sudo systemctl restart pi-media-hub
 sleep 2
-sudo systemctl status pi-media-hub --no-pager | head -5
 
-echo "✓ Service installed and started"
+STATUS=$(sudo systemctl is-active pi-media-hub)
+if [ "$STATUS" = "active" ]; then
+  echo "✓ Service running"
+else
+  echo "✗ Service failed — check with: sudo journalctl -u pi-media-hub -n 20"
+fi
 
-# ── 3. Create autostart for kiosk player ──────────────────────────────────
-echo "🖥️  Setting up kiosk autostart..."
+# ── 5. Kiosk autostart ────────────────────────────────────────────────────
+echo "🖥️  Setting up kiosk..."
 mkdir -p ~/.config/autostart
-
 cat > ~/.config/autostart/player.desktop << DESKEOF
 [Desktop Entry]
 Type=Application
 Name=Pi Media Hub Player
 Exec=chromium --kiosk --noerrdialogs --disable-infobars --autoplay-policy=no-user-gesture-required http://localhost:3000/player.html
 DESKEOF
-
 echo "✓ Kiosk autostart configured"
 
-# ── 4. WiFi hotspot setup ──────────────────────────────────────────────────
+# ── 6. WiFi hotspot (optional) ────────────────────────────────────────────
 echo ""
 read -p "Set up WiFi hotspot fallback? (y/N): " DO_HOTSPOT
 if [[ "$DO_HOTSPOT" =~ ^[Yy]$ ]]; then
-  echo "📡 Installing hostapd and dnsmasq..."
   sudo apt-get install -y hostapd dnsmasq -q
-
-  # Unmask hostapd (it's masked by default on Pi OS)
   sudo systemctl unmask hostapd
 
   sudo tee /etc/hostapd/hostapd.conf > /dev/null << HAEOF
@@ -83,53 +91,35 @@ wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 HAEOF
 
-  # Add static IP for hotspot mode
-  grep -q "interface wlan0" /etc/dhcpcd.conf || sudo tee -a /etc/dhcpcd.conf > /dev/null << DHCPEOF
-
-# Pi Media Hub hotspot static IP (only active when hotspot runs)
-#interface wlan0
-#static ip_address=192.168.4.1/24
-#nohook wpa_supplicant
-DHCPEOF
-
   sudo tee /etc/dnsmasq.d/pimediahub.conf > /dev/null << DNSEOF
 interface=wlan0
 dhcp-range=192.168.4.2,192.168.4.20,255.255.255.0,24h
 DNSEOF
 
-  # Auto-switching script
   sudo tee /usr/local/bin/wifi-check.sh > /dev/null << 'WIFIEOF'
 #!/bin/bash
-# Wait for wifi to settle
-sleep 15
+sleep 20
 CONNECTED=$(iwgetid -r 2>/dev/null)
 if [ -z "$CONNECTED" ]; then
-    echo "No WiFi — starting hotspot"
-    # Enable static IP for wlan0
-    sudo sed -i 's/^#interface wlan0/interface wlan0/; s/^#static ip_address/static ip_address/; s/^#nohook wpa_supplicant/nohook wpa_supplicant/' /etc/dhcpcd.conf
-    sudo systemctl restart dhcpcd
-    sudo systemctl start hostapd dnsmasq
+  echo "No WiFi — starting hotspot"
+  sudo ip addr add 192.168.4.1/24 dev wlan0 2>/dev/null || true
+  sudo systemctl start hostapd dnsmasq
 else
-    echo "Connected to: $CONNECTED — hotspot off"
-    sudo systemctl stop hostapd dnsmasq 2>/dev/null || true
+  echo "WiFi: $CONNECTED — hotspot off"
+  sudo systemctl stop hostapd dnsmasq 2>/dev/null || true
 fi
 WIFIEOF
   sudo chmod +x /usr/local/bin/wifi-check.sh
-
-  # Run wifi-check on every boot
-  (sudo crontab -l 2>/dev/null; echo "@reboot /usr/local/bin/wifi-check.sh >> /var/log/wifi-check.log 2>&1") | sudo crontab -
-
+  (sudo crontab -l 2>/dev/null; echo "@reboot /usr/local/bin/wifi-check.sh >> /var/log/wifi-check.log 2>&1") | sort -u | sudo crontab -
   echo "✓ Hotspot configured (SSID: PiMediaHub, password: mafia2016)"
-  echo "  When no WiFi found, connect to PiMediaHub → http://192.168.4.1:3000"
 fi
 
 echo ""
 echo "╔══════════════════════════════════════════════════╗"
 echo "║           Installation complete! ✓               ║"
 echo "╠══════════════════════════════════════════════════╣"
-echo "║  Service:    sudo systemctl status pi-media-hub  ║"
-echo "║  Logs:       sudo journalctl -u pi-media-hub -f  ║"
-echo "║  Web UI:     http://localhost:3000               ║"
-echo "║  Reboot to start the kiosk display               ║"
+echo "║  Web UI:  http://$(hostname -I | awk '{print $1}'):3000  ║"
+echo "║  Logs:    sudo journalctl -u pi-media-hub -f     ║"
+echo "║  Reboot to start the TV kiosk display            ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""
