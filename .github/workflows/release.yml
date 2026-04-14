@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'   # triggers on tags like 1.0.1, 1.0.2, etc.
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create release zip
+        run: |
+          zip -r pi-media-hub-${{ steps.version.outputs.VERSION }}.zip . \
+            --exclude "node_modules/*" \
+            --exclude ".git/*" \
+            --exclude "uploads/*" \
+            --exclude "config.json" \
+            --exclude "*.log"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: "Pi Media Hub v${{ steps.version.outputs.VERSION }}"
+          body: |
+            ## Pi Media Hub v${{ steps.version.outputs.VERSION }}
+
+            ### Install fresh on a Pi
+            ```bash
+            git clone https://github.com/darkhousemaster-hue/Pi-Media-Hub.git pi-media-hub
+            cd pi-media-hub
+            bash install.sh
+            ```
+
+            ### Update existing install
+            Press the **⬆ Update** button in the app header, or run:
+            ```bash
+            cd ~/pi-media-hub && git pull && bash install.sh
+            ```
+          files: pi-media-hub-${{ steps.version.outputs.VERSION }}.zip
+          make_latest: true
