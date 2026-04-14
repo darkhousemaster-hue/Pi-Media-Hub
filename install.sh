@@ -8,7 +8,7 @@ INSTALL_DIR=$(pwd)
 
 echo ""
 echo "╔══════════════════════════════════════╗"
-echo "║   Pi Media Hub — Install v1.0.1      ║"
+echo "║   Pi Media Hub — Install v1.0.2      ║"
 echo "║   User: $USER_NAME"
 echo "╚══════════════════════════════════════╝"
 echo ""

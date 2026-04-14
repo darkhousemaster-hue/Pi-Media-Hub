@@ -105,14 +105,22 @@ export default function MediaLibrary() {
   const filtered = files.filter(f=>f.name.toLowerCase().includes(search.toLowerCase()));
   const singleSelected = selected.size === 1 ? files.find(f=>f.name===[...selected][0]) : null;
 
-  const FileInput = ({targetFolder, label, btnClass}) => (
-    <label className={btnClass||'btn btn-primary'} style={{cursor:'pointer'}}>
-      {uploading ? (uploadMsg || 'Uploading…') : label}
-      <input key={`${targetFolder||folder}-${inputKey}`} type="file" multiple accept={FOLDERS[targetFolder||folder]?.accept||meta.accept}
-        style={{display:'none'}} disabled={uploading}
-        onChange={e=>{if(targetFolder)setFolder(targetFolder); doUpload(e.target.files,targetFolder);}} />
-    </label>
-  );
+  // Direct upload handler - not a component to avoid remount issues
+  function uploadLabel(label, targetFolder, btnClass) {
+    return (
+      <label className={btnClass || 'btn btn-primary'} style={{cursor:'pointer'}}>
+        {uploading ? (uploadMsg || 'Uploading…') : label}
+        <input
+          key={`ul-${targetFolder||folder}-${inputKey}`}
+          type="file" multiple
+          accept={FOLDERS[targetFolder||folder]?.accept || meta.accept}
+          style={{display:'none'}}
+          disabled={uploading}
+          onChange={e => { if (targetFolder) setFolder(targetFolder); doUpload(e.target.files, targetFolder || folder); }}
+        />
+      </label>
+    );
+  }
 
   return (
     <>
@@ -123,7 +131,7 @@ export default function MediaLibrary() {
         </div>
         <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
           <button className="btn btn-ghost" onClick={()=>{loadFiles(folder);loadCounts();}}>↺ Refresh</button>
-          <FileInput label="⬆ Upload Files" />
+          {uploadLabel("⬆ Upload Files")}
         </div>
       </div>
 
@@ -151,8 +159,7 @@ export default function MediaLibrary() {
                   onMouseEnter={e=>{e.currentTarget.style.background='var(--primary-light)';e.currentTarget.style.borderColor='var(--primary)';}}
                   onMouseLeave={e=>{e.currentTarget.style.background='var(--gray-50)';e.currentTarget.style.borderColor='var(--gray-200)';}}>
                   <input key={`q-${k}-${inputKey}`} type="file" multiple accept={accept} style={{display:'none'}}
-                    disabled={uploading} onChange={e=>{setFolder(k);doUpload(e.target.files,k);}}/>
-                  <span style={{fontSize:16}}>{icon}</span>
+                    disabled={uploading} onChange={e=>{setFolder(k);doUpload(e.target.files,k);}}/><span style={{fontSize:16}}>{icon}</span>
                   <span style={{fontSize:12,fontWeight:500,color:'var(--gray-700)',flex:1}}>Add {label}</span>
                   <span style={{fontSize:11,color:'var(--gray-400)'}}>⬆</span>
                 </label>
@@ -207,7 +214,7 @@ export default function MediaLibrary() {
             <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:10,color:'var(--gray-400)',padding:32}}>
               <span style={{fontSize:40}}>{meta.icon}</span>
               <div style={{fontSize:15,fontWeight:600}}>No {meta.label.toLowerCase()} yet</div>
-              <FileInput label={`Upload ${meta.label}`} btnClass="btn btn-outline"/>
+              {uploadLabel(`Upload ${meta.label}`, undefined, "btn btn-outline")}
             </div>
           ) : viewMode==='grid' ? (
             <div className="files-grid">
