@@ -66,17 +66,11 @@ function InstructionModal({ onClose, sendCommand }) {
 }
 
 export default function Dashboard() {
-  const { sendCommand, status, connected, config, saveConfig } = useApp();
+  const { sendCommand, status, connected, config } = useApp();
   const [systemInfo, setSystemInfo] = useState({ slides:0,videos:0,tracks:0,instructions:0 });
   const [showInstructions, setShowInstructions] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
 
-  const isRandom = config?.slideshow?.randomOrder === true;
-
-  function toggleRandom() {
-    if (!config) return;
-    saveConfig({ ...config, slideshow: { ...config.slideshow, randomOrder: !isRandom } });
-  }
 
   useEffect(() => {
     async function loadCounts() {
@@ -142,15 +136,7 @@ export default function Dashboard() {
           <button className="action-btn secondary" onClick={() => sendCommand('restart-slideshow')}>
             <span className="action-icon">↺</span>Restart
           </button>
-          <button
-            className="action-btn"
-            style={{ background: isRandom ? '#16a34a' : 'var(--gray-100)', color: isRandom ? '#fff' : 'var(--gray-700)', border: isRandom ? 'none' : '1px solid var(--gray-200)' }}
-            onClick={toggleRandom}
-            title={isRandom ? 'Random order: ON — click to turn off' : 'Random order: OFF — click to turn on'}
-          >
-            <span className="action-icon">🔀</span>
-            {isRandom ? 'Random: ON' : 'Random: OFF'}
-          </button>
+
         </div>
         <div style={{ marginTop:14,borderTop:'1px solid var(--gray-100)',paddingTop:12 }}>
           <button onClick={() => setShowShortcuts(s => !s)}

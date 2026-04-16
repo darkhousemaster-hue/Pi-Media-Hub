@@ -7,9 +7,9 @@ import MediaLibrary from './components/MediaLibrary.jsx';
 import SlideshowConfig from './components/SlideshowConfig.jsx';
 import NetworkStatus from './components/NetworkStatus.jsx';
 
-// In dev, Vite is on :5173 but socket.io must connect directly to Express on :3000.
-// Use polling-only in dev — the browser blocks cross-origin WebSocket upgrades.
-// In production everything is on the same port so WebSocket works fine.
+// Read version from package.json at build time
+const APP_VERSION = '1.0.4';
+
 const SOCKET_URL = import.meta.env.DEV ? 'http://localhost:3000' : '/';
 const TRANSPORTS = import.meta.env.DEV ? ['polling'] : ['websocket', 'polling'];
 const socket = io(SOCKET_URL, { transports: TRANSPORTS });
@@ -17,12 +17,13 @@ const socket = io(SOCKET_URL, { transports: TRANSPORTS });
 let toastTimer;
 
 export default function App() {
-  const [page, setPage]       = useState('dashboard');
-  const [status, setStatus]   = useState({ status:'playing', mode:'slideshow', currentSlide:0, totalSlides:0 });
-  const [config, setConfig]   = useState(null);
+  const [page, setPage]         = useState('dashboard');
+  const [status, setStatus]     = useState({ status:'playing', mode:'slideshow', currentSlide:0, totalSlides:0 });
+  const [config, setConfig]     = useState(null);
   const [connected, setConnected] = useState(false);
-  const [toast, setToast]     = useState(null);
+  const [toast, setToast]       = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [updating, setUpdating] = useState(false);
 
   useEffect(() => {
     socket.on('connect',       () => setConnected(true));
@@ -30,12 +31,9 @@ export default function App() {
     socket.on('status',        setStatus);
     socket.on('config',        setConfig);
     socket.on('config-update', setConfig);
-    return () => {
-      ['connect','disconnect','status','config','config-update'].forEach(e => socket.off(e));
-    };
+    return () => ['connect','disconnect','status','config','config-update'].forEach(e => socket.off(e));
   }, []);
 
-  // Always fetch config via REST on mount — don't wait for socket
   useEffect(() => {
     apiFetch('/api/config').then(r => r.json()).then(setConfig).catch(() => {});
     apiFetch('/api/status').then(r => r.json()).then(setStatus).catch(() => {});
@@ -44,12 +42,12 @@ export default function App() {
   function toast_(msg) {
     setToast(msg);
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => setToast(null), 2800);
+    toastTimer = setTimeout(() => setToast(null), 3000);
   }
 
   const sendCommand = useCallback((action, data = {}) => {
     socket.emit('command', { action, ...data });
-    toast_(`▶ ${action.replace(/-/g,' ')}`);
+    toast_(`▶ ${action.replace(/-/g, ' ')}`);
   }, []);
 
   const saveConfig = useCallback(async (updates) => {
@@ -61,12 +59,51 @@ export default function App() {
       });
       const updated = await res.json();
       setConfig(updated);
-      toast_('Configuration saved ✓');
+      toast_('Saved ✓');
       return updated;
-    } catch {
-      toast_('Failed to save config');
-    }
+    } catch { toast_('Failed to save'); }
   }, []);
+
+  async function handleReboot() {
+    if (!confirm('Reboot the Raspberry Pi?\nAll clients disconnect for ~60 seconds.')) return;
+    try {
+      await apiFetch('/api/system/reboot', { method: 'POST' });
+      toast_('Rebooting…');
+    } catch { toast_('Reboot command sent'); }
+  }
+
+  async function handleNetworkRestart() {
+    if (!confirm('Restart network service?')) return;
+    try {
+      await apiFetch('/api/system/restart-network', { method: 'POST' });
+      toast_('Restarting network…');
+    } catch { toast_('Network restart failed'); }
+  }
+
+  async function handleUpdate() {
+    if (!confirm('Pull latest version from GitHub and rebuild?\nThe app will restart automatically.')) return;
+    setUpdating(true);
+    toast_('⬆ Update started…');
+    try {
+      await apiFetch('/api/system/update', { method: 'POST' });
+      // Start polling immediately — server will be down briefly during restart
+      let attempts = 0;
+      function poll() {
+        fetch('/api/config')
+          .then(r => r.json())
+          .then(() => { setUpdating(false); window.location.reload(); })
+          .catch(() => {
+            attempts++;
+            if (attempts < 60) setTimeout(poll, 3000); // try for 3 minutes
+            else { setUpdating(false); toast_('Update timed out — check Pi logs'); }
+          });
+      }
+      setTimeout(poll, 5000); // first check after 5s
+    } catch {
+      toast_('Update failed — check Pi has git and internet access');
+      setUpdating(false);
+    }
+  }
 
   const navItems = [
     { id:'dashboard', label:'Dashboard', icon:'⊞' },
@@ -77,32 +114,11 @@ export default function App() {
 
   function handleNav(id) { setPage(id); setMenuOpen(false); }
 
-  function handleReboot() {
-    if (confirm('Reboot the Raspberry Pi?\nAll clients will disconnect for ~60 seconds.'))
-      sendCommand('reboot');
-  }
-
-  async function handleUpdate() {
-    if (!confirm('Pull latest version from GitHub and rebuild?\n\nThe app will restart automatically. This takes ~1-2 minutes.')) return;
-    try {
-      const res = await apiFetch('/api/system/update', { method: 'POST' });
-      const data = await res.json();
-      toast_('⬆ Updating… app will restart in ~2 minutes');
-    } catch {
-      toast_('Update failed — is this a Pi with git installed?');
-    }
-  }
-  function handleNetworkRestart() {
-    if (confirm('Restart network service?\nClients may briefly disconnect.'))
-      sendCommand('restart-network');
-  }
-
   const ctx = { socket, status, config, connected, sendCommand, saveConfig };
 
   return (
     <AppContext.Provider value={ctx}>
       <div className="app">
-        {/* ── Header ── */}
         <header className="header">
           <div className="header-logo">
             <div className="logo-icon">🖥️</div>
@@ -121,9 +137,14 @@ export default function App() {
           </nav>
 
           <div className="header-actions">
-            <button className="btn btn-ghost btn-sm header-sys-btn"
-              title="Update from GitHub" onClick={handleUpdate}>
-              ⬆ <span className="btn-label">Update</span>
+            <button
+              className={`btn btn-sm header-sys-btn ${updating ? 'btn-slate' : 'btn-ghost'}`}
+              title="Update from GitHub"
+              onClick={handleUpdate}
+              disabled={updating}
+            >
+              {updating ? '⏳' : '⬆'} <span className="btn-label">{updating ? 'Updating…' : `Update`}</span>
+              <span style={{ fontSize:10, opacity:.6, marginLeft:4 }}>v{APP_VERSION}</span>
             </button>
             <button className="btn btn-ghost btn-sm header-sys-btn"
               title="Restart network" onClick={handleNetworkRestart}>
@@ -139,7 +160,6 @@ export default function App() {
           </div>
         </header>
 
-        {/* Mobile dropdown */}
         {menuOpen && (
           <div className="mobile-nav">
             {navItems.map(item => (

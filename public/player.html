@@ -293,7 +293,7 @@ const socket=io(window.SERVER,{transports:['websocket','polling']});
 socket.on('config',        cfg=>{ config=cfg; applyConfig(); });
 socket.on('config-update', cfg=>{ config=cfg; applyConfig(); if(slides.length&&!isVideoActive&&!isPaused) startSlideshow(); });
 socket.on('command',       handleCommand);
-socket.on('media-updated', loadMedia);
+socket.on('media-updated', () => { if (!isVideoActive) loadMedia(); });
 
 // ── Load media ─────────────────────────────────────────────────────────────
 async function loadMedia(){

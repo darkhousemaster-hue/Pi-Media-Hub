@@ -195,12 +195,18 @@ export default function SlideshowConfig() {
                 <span className="slider-value">{vi.intervalMinutes || 5}m</span>
               </div>
             </div>
-            <div style={{marginTop:10}}>
+            <div style={{marginTop:10,display:'flex',flexDirection:'column',gap:8}}>
               <div className="checkbox-row">
                 <input type="checkbox" id="videoEnabled"
                   checked={vi.enabled !== false}
                   onChange={e => update('video.enabled', e.target.checked)} />
                 <label htmlFor="videoEnabled">Enable automatic video interruptions</label>
+              </div>
+              <div className="checkbox-row">
+                <input type="checkbox" id="randomOrder"
+                  checked={sl.randomOrder === true}
+                  onChange={e => update('slideshow.randomOrder', e.target.checked)} />
+                <label htmlFor="randomOrder">🔀 Random slide order</label>
               </div>
             </div>
           </Section>

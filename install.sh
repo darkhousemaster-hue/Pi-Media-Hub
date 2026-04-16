@@ -58,6 +58,11 @@ sleep 2
 STATUS=$(sudo systemctl is-active pi-media-hub)
 if [ "$STATUS" = "active" ]; then
   echo "✓ Service running"
+
+# ── Allow reboot/restart without password prompt ────────────────────────────
+echo "$USER_NAME ALL=(ALL) NOPASSWD: /sbin/reboot, /usr/sbin/reboot, /usr/bin/systemctl restart pi-media-hub, /usr/bin/systemctl restart networking, /bin/systemctl restart pi-media-hub, /bin/systemctl restart networking" | sudo tee /etc/sudoers.d/pi-media-hub > /dev/null
+sudo chmod 440 /etc/sudoers.d/pi-media-hub
+echo "✓ Sudo permissions configured (reboot + service restart)"
 else
   echo "✗ Service failed — check with: sudo journalctl -u pi-media-hub -n 20"
 fi

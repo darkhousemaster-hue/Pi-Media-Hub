@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import cors from 'cors';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -222,7 +222,10 @@ app.get('/api/network', (req, res) => {
 
 app.post('/api/system/reboot', (req, res) => {
   res.json({ success: true });
-  setTimeout(() => { try { execSync('sudo reboot'); } catch {} }, 1000);
+  setTimeout(() => {
+    const child = spawn('sudo', ['reboot'], { detached: true, stdio: 'ignore' });
+    child.unref();
+  }, 1000);
 });
 
 app.post('/api/system/restart-network', (req, res) => {
@@ -231,21 +234,34 @@ app.post('/api/system/restart-network', (req, res) => {
 });
 
 // ─── Update endpoint ─────────────────────────────────────────────────────────
-app.post('/api/system/update', async (req, res) => {
-  res.json({ success: true, message: 'Update started — check logs' });
-  // Run update in background after response is sent
-  setTimeout(async () => {
-    try {
-      console.log('=== Starting update from GitHub ===');
-      execSync('git pull origin main', { cwd: __dirname, stdio: 'inherit' });
-      execSync('npm install --silent', { cwd: __dirname, stdio: 'inherit' });
-      execSync('npm run build', { cwd: __dirname, stdio: 'inherit' });
-      console.log('=== Update complete — restarting ===');
-      execSync('sudo systemctl restart pi-media-hub');
-    } catch(err) {
-      console.error('Update failed:', err.message);
-    }
-  }, 500);
+app.post('/api/system/update', (req, res) => {
+  res.json({ success: true, message: 'Update started' });
+
+  // Write an update script and run it detached so it survives service restart
+  const script = `#!/bin/bash
+set -e
+LOG=/tmp/pi-media-hub-update.log
+exec >> $LOG 2>&1
+echo "=== UPDATE STARTED $(date) ==="
+cd ${__dirname}
+git pull origin main
+npm install --silent
+npm run build
+echo "=== BUILD DONE - restarting ==="
+sudo systemctl restart pi-media-hub
+echo "=== UPDATE COMPLETE $(date) ==="
+`;
+  const scriptPath = path.join(__dirname, '_update.sh');
+  fs.writeFileSync(scriptPath, script, { mode: 0o755 });
+
+  // Spawn detached so it keeps running after service restarts
+  const child = spawn('bash', [scriptPath], {
+    detached: true,
+    stdio: 'ignore',
+    cwd: __dirname,
+  });
+  child.unref();
+  console.log('Update process launched (PID:', child.pid, ')');
 });
 
 // ─── Socket.io ────────────────────────────────────────────────────────────────
@@ -264,6 +280,20 @@ io.on('connection', (socket) => {
       case 'next':           state.currentSlide = (state.currentSlide + 1) % Math.max(state.totalSlides, 1); break;
       case 'restart-slideshow': state.currentSlide = 0; state.status = 'playing'; state.mode = 'slideshow'; break;
       case 'play-instruction':  state.mode = 'video'; state.status = 'playing'; break;
+      case 'reboot':
+        setTimeout(() => {
+          try {
+            spawn('sudo', ['reboot'], { detached: true, stdio: 'ignore' }).unref();
+          } catch(e) { console.error('reboot:', e.message); }
+        }, 1000);
+        break;
+      case 'restart-network':
+        setTimeout(() => {
+          try {
+            spawn('sudo', ['systemctl', 'restart', 'networking'], { detached: true, stdio: 'ignore' }).unref();
+          } catch(e) { console.error('network restart:', e.message); }
+        }, 300);
+        break;
     }
     io.emit('command', cmd);
     io.emit('status', state);
