@@ -329,6 +329,14 @@ app.get('*', (req, res) => {
   }
 });
 
+// Keep the process alive — log errors instead of crashing
+process.on('uncaughtException', err => {
+  console.error('[UNCAUGHT EXCEPTION]', err.message, err.stack);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[UNHANDLED REJECTION]', reason);
+});
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`\n╔══════════════════════════════════╗`);
   console.log(`║   Pi Media Hub — port ${PORT}       ║`);

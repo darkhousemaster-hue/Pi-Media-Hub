@@ -182,21 +182,39 @@ function scheduleVideo(){
 }
 
 function playVideo(url,instr){
+  _videoEndHandled=false;  // reset guard for new video
   isVideoActive=true; isInstruction=!!instr;
   stopSlideshow(); audioEl.pause();
   videoEl.src=url; applyVideo(instr);
   videoOverlay.classList.add('visible');
   videoEl.play().catch(()=>{});
   socket.emit('state-update',{mode:'video',status:'playing'});
-  videoEl.onended=videoEl.onerror=onVideoEnded;
+  // Use a one-time handler to prevent double-fire from onerror + onended
+  videoEl.onended = handleVideoEnd;
+  videoEl.onerror = handleVideoEnd;
 }
 
-function onVideoEnded(){
-  videoOverlay.classList.remove('visible'); videoEl.src='';
+let _videoEndHandled = false;
+function handleVideoEnd(){
+  // Guard: only handle once per video play
+  if(_videoEndHandled) return;
+  _videoEndHandled = true;
+  videoEl.onended = null;
+  videoEl.onerror = null;
+
+  videoOverlay.classList.remove('visible');
+  videoEl.src='';
   isVideoActive=false; isInstruction=false;
-  if(!isPaused){ applyAudio(); audioEl.play().catch(()=>{}); startSlideshow(); socket.emit('state-update',{mode:'slideshow',status:'playing'}); }
-  scheduleVideo();
+
+  if(!isPaused){
+    applyAudio();
+    audioEl.play().catch(()=>{});
+    startSlideshow(); // startSlideshow already calls scheduleVideo internally
+    socket.emit('state-update',{mode:'slideshow',status:'playing'});
+  }
 }
+
+function onVideoEnded(){ handleVideoEnd(); } // kept for compatibility
 
 function stopVideoNow(){
   if(!isVideoActive) return;
