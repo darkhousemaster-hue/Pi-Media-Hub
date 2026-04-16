@@ -209,7 +209,10 @@ function handleVideoEnd(){
   if(!isPaused){
     applyAudio();
     audioEl.play().catch(()=>{});
-    startSlideshow(); // startSlideshow already calls scheduleVideo internally
+    // Bypass autoAdvance check — video ended naturally, slideshow MUST resume
+    clearInterval(slideshowTimer);
+    slideshowTimer=setInterval(advance,(config.slideshow?.defaultDuration||5)*1000);
+    scheduleVideo();
     socket.emit('state-update',{mode:'slideshow',status:'playing'});
   }
 }

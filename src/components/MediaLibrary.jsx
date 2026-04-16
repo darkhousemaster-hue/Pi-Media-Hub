@@ -282,7 +282,19 @@ export default function MediaLibrary() {
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:7}}>
                 <a href={singleSelected.url} download className="btn btn-outline w-full">⬇ Download</a>
-                <button className="btn btn-danger w-full" onClick={()=>{ setSelected(new Set([singleSelected.name])); deleteSelected(); }}>🗑 Delete</button>
+                <button className="btn btn-danger w-full" onClick={async () => {
+                  const name = singleSelected.name;
+                  if (!confirm(`Delete "${name}"?`)) return;
+                  setDeleting(true);
+                  try {
+                    await apiFetch(`/api/files/${folder}/${encodeURIComponent(name)}`, {method:'DELETE'});
+                    showToast('✓ Deleted');
+                    setSelected(new Set());
+                    await loadFiles(folder);
+                    await loadCounts();
+                  } catch { showToast('✗ Delete failed', true); }
+                  setDeleting(false);
+                }}>🗑 Delete</button>
               </div>
             </>
           ) : (
