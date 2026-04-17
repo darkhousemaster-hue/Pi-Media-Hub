@@ -8,7 +8,7 @@ import SlideshowConfig from './components/SlideshowConfig.jsx';
 import NetworkStatus from './components/NetworkStatus.jsx';
 
 // Read version from package.json at build time
-const APP_VERSION = '1.0.6';
+const APP_VERSION = '1.0.7';
 
 const SOCKET_URL = import.meta.env.DEV ? 'http://localhost:3000' : '/';
 const TRANSPORTS = import.meta.env.DEV ? ['polling'] : ['websocket', 'polling'];

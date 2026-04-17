@@ -237,9 +237,7 @@ app.post('/api/system/restart-network', (req, res) => {
 app.post('/api/system/update', (req, res) => {
   res.json({ success: true, message: 'Update started' });
 
-  // Write an update script and run it detached so it survives service restart
   const script = `#!/bin/bash
-set -e
 LOG=/tmp/pi-media-hub-update.log
 exec >> $LOG 2>&1
 echo "=== UPDATE STARTED $(date) ==="
@@ -247,14 +245,14 @@ cd ${__dirname}
 git pull origin main
 npm install --silent
 npm run build
-echo "=== BUILD DONE - restarting ==="
-sudo systemctl restart pi-media-hub
-echo "=== UPDATE COMPLETE $(date) ==="
+echo "=== BUILD DONE - killing process so systemd restarts it ==="
+# Kill the node process — systemd Restart=always will bring it back with new code
+kill ${process.pid}
+echo "=== DONE ==="
 `;
   const scriptPath = path.join(__dirname, '_update.sh');
   fs.writeFileSync(scriptPath, script, { mode: 0o755 });
 
-  // Spawn detached so it keeps running after service restarts
   const child = spawn('bash', [scriptPath], {
     detached: true,
     stdio: 'ignore',

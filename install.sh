@@ -55,6 +55,11 @@ sudo systemctl enable pi-media-hub
 sudo systemctl restart pi-media-hub
 sleep 2
 
+# ── Give the app permission to reboot/restart without a password ──────────
+echo "$USER_NAME ALL=(ALL) NOPASSWD: /sbin/reboot, /usr/sbin/reboot, /bin/systemctl restart pi-media-hub, /bin/systemctl restart networking, /usr/bin/systemctl restart pi-media-hub, /usr/bin/systemctl restart networking" | sudo tee /etc/sudoers.d/pi-media-hub > /dev/null
+sudo chmod 440 /etc/sudoers.d/pi-media-hub
+echo "✓ Sudo permissions configured"
+
 STATUS=$(sudo systemctl is-active pi-media-hub)
 if [ "$STATUS" = "active" ]; then
   echo "✓ Service running"
