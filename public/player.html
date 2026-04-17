@@ -185,11 +185,14 @@ function playVideo(url,instr){
   _videoEndHandled=false;  // reset guard for new video
   isVideoActive=true; isInstruction=!!instr;
   stopSlideshow(); audioEl.pause();
-  videoEl.src=url; applyVideo(instr);
+  videoEl.src=url;
+  videoEl.muted=false;       // ensure never muted
   videoOverlay.classList.add('visible');
+  // Apply volume once the browser has the stream ready — more reliable than setting before load
+  videoEl.oncanplay = () => { applyVideo(instr); videoEl.muted=false; };
+  applyVideo(instr);         // also set immediately as a first attempt
   videoEl.play().catch(()=>{});
   socket.emit('state-update',{mode:'video',status:'playing'});
-  // Use a one-time handler to prevent double-fire from onerror + onended
   videoEl.onended = handleVideoEnd;
   videoEl.onerror = handleVideoEnd;
 }
@@ -201,6 +204,7 @@ function handleVideoEnd(){
   _videoEndHandled = true;
   videoEl.onended = null;
   videoEl.onerror = null;
+  videoEl.oncanplay = null;
 
   videoOverlay.classList.remove('visible');
   videoEl.src='';

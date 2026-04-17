@@ -79,7 +79,7 @@ cat > ~/.config/autostart/player.desktop << DESKEOF
 [Desktop Entry]
 Type=Application
 Name=Pi Media Hub Player
-Exec=chromium --kiosk --noerrdialogs --disable-infobars --autoplay-policy=no-user-gesture-required http://localhost:3000/player.html
+Exec=chromium --kiosk --noerrdialogs --disable-infobars --autoplay-policy=no-user-gesture-required --alsa-output-device=hdmi http://localhost:3000/player.html
 DESKEOF
 echo "✓ Kiosk autostart configured"
 
