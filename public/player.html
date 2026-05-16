@@ -178,13 +178,19 @@ function scheduleVideo(){
   clearTimeout(videoScheduleTimer);
   if(!config.video?.enabled||!videos.length) return;
   const ms=(config.video?.intervalMinutes||5)*60*1000;
-  videoScheduleTimer=setTimeout(()=>{ if(!isPaused) playVideo(videos[Math.floor(Math.random()*videos.length)],false); else scheduleVideo(); },ms);
+  videoScheduleTimer=setTimeout(()=>{
+    if(isPaused||isVideoActive){ scheduleVideo(); return; }
+    playVideo(videos[Math.floor(Math.random()*videos.length)],false);
+  },ms);
 }
 
 function playVideo(url,instr){
   _videoEndHandled=false;  // reset guard for new video
   isVideoActive=true; isInstruction=!!instr;
   stopSlideshow(); audioEl.pause();
+  // Cancel any pending interval-video trigger so it can't preempt the current video
+  // (especially important for instruction videos)
+  clearTimeout(videoScheduleTimer);
   videoEl.src=url;
   videoEl.muted=false;       // ensure never muted
   videoOverlay.classList.add('visible');

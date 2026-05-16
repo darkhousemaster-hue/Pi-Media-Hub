@@ -1,6 +1,6 @@
 {
   "name": "pi-media-hub",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Raspberry Pi Media Hub - Slideshow, Music & Video Manager",
   "type": "module",
   "scripts": {
