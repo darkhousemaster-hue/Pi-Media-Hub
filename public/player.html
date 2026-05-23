@@ -176,7 +176,11 @@ function stopSlideshow(){ clearInterval(slideshowTimer); slideshowTimer=null; }
 // ── Video ──────────────────────────────────────────────────────────────────
 function scheduleVideo(){
   clearTimeout(videoScheduleTimer);
+  videoScheduleTimer=null;
   if(!config.video?.enabled||!videos.length) return;
+  // Never arm the interval-video timer while ANY video is playing.
+  // handleVideoEnd() will re-arm it when the current video finishes.
+  if(isVideoActive) return;
   const ms=(config.video?.intervalMinutes||5)*60*1000;
   videoScheduleTimer=setTimeout(()=>{
     if(isPaused||isVideoActive){ scheduleVideo(); return; }
@@ -185,12 +189,21 @@ function scheduleVideo(){
 }
 
 function playVideo(url,instr){
+  // HARD GUARD: an interval video MUST NEVER stop or overwrite an instruction
+  // video. If an instruction is currently playing, drop the interval request
+  // entirely — handleVideoEnd() will re-arm the interval timer when the
+  // instruction finishes naturally.
+  if(!instr && isVideoActive && isInstruction){
+    console.log('[player] Interval video skipped — instruction in progress');
+    return;
+  }
   _videoEndHandled=false;  // reset guard for new video
   isVideoActive=true; isInstruction=!!instr;
   stopSlideshow(); audioEl.pause();
   // Cancel any pending interval-video trigger so it can't preempt the current video
   // (especially important for instruction videos)
   clearTimeout(videoScheduleTimer);
+  videoScheduleTimer=null;
   videoEl.src=url;
   videoEl.muted=false;       // ensure never muted
   videoOverlay.classList.add('visible');
@@ -325,6 +338,18 @@ socket.on('config',        cfg=>{ config=cfg; applyConfig(); });
 socket.on('config-update', cfg=>{ config=cfg; applyConfig(); if(slides.length&&!isVideoActive&&!isPaused) startSlideshow(); });
 socket.on('command',       handleCommand);
 socket.on('media-updated', () => { if (!isVideoActive) loadMedia(); });
+
+// Auto-reload when the server restarts (so deploys actually reach the kiosk
+// without a manual reboot). Server emits its boot timestamp on every connect;
+// if it changes after a reconnect, the server was restarted → reload.
+let _serverBootTime = null;
+socket.on('server-version', t => {
+  if (_serverBootTime === null) { _serverBootTime = t; return; }
+  if (t !== _serverBootTime) {
+    console.log('[player] Server restarted — reloading');
+    setTimeout(() => window.location.reload(), 500);
+  }
+});
 
 // ── Load media ─────────────────────────────────────────────────────────────
 async function loadMedia(){

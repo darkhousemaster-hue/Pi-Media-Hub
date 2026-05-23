@@ -24,6 +24,10 @@ const PORT = process.env.PORT || 3000;
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const CONFIG_FILE = path.join(__dirname, 'config.json');
 
+// Server boot timestamp — emitted to clients on connect so the kiosk player
+// can detect a server restart (deploy) and auto-reload its cached page.
+const SERVER_BOOT_TIME = Date.now();
+
 ['pictures', 'videos', 'music', 'instructionvideos'].forEach(dir => {
   fs.mkdirSync(path.join(UPLOAD_DIR, dir), { recursive: true });
 });
@@ -269,6 +273,9 @@ io.on('connection', (socket) => {
   // Send current state immediately so player can resume from correct position
   socket.emit('status', state);
   socket.emit('config', loadConfig());
+  // Boot timestamp — player reloads itself if this changes after a reconnect
+  // (i.e. server was restarted, usually because of a deploy).
+  socket.emit('server-version', SERVER_BOOT_TIME);
 
   socket.on('command', (cmd) => {
     switch (cmd.action) {
@@ -307,7 +314,15 @@ io.on('connection', (socket) => {
 });
 
 // ─── Serve ────────────────────────────────────────────────────────────────────
-app.get('/player.html', (req, res) => res.sendFile(path.join(__dirname, 'public', 'player.html')));
+app.get('/player.html', (req, res) => {
+  // Prevent Chromium from serving a stale cached player.html after a deploy.
+  // The kiosk page is loaded once on boot; without no-cache it would keep
+  // running the old code until a manual reboot.
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.sendFile(path.join(__dirname, 'public', 'player.html'));
+});
 
 app.get('*', (req, res) => {
   const idx = path.join(__dirname, 'dist', 'index.html');

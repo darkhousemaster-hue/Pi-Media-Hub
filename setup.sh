@@ -68,6 +68,31 @@ sudo systemctl start pi-media-hub
 
 echo "✅ Service created and started"
 
+# ── 5b. Disable WiFi power-save (fixes intermittent LAN access) ───────────
+# The Pi's WiFi radio sleeps when idle, causing the first request from a
+# cold LAN client to time out. The Cloudflare tunnel masks this because its
+# persistent outbound connection keeps the radio awake.
+echo ""
+echo "📶 Disabling WiFi power-save..."
+sudo tee /etc/systemd/system/wifi-powersave-off.service > /dev/null << 'WIFIPSEOF'
+[Unit]
+Description=Disable WiFi power save on wlan0
+After=network.target
+Wants=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c '/sbin/iw dev wlan0 set power_save off 2>/dev/null || /sbin/iwconfig wlan0 power off 2>/dev/null || true'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+WIFIPSEOF
+sudo systemctl daemon-reload
+sudo systemctl enable wifi-powersave-off.service >/dev/null 2>&1
+sudo systemctl start wifi-powersave-off.service >/dev/null 2>&1 || true
+echo "✅ WiFi power-save disabled (persists across reboots)"
+
 # ── 6. Set up WiFi Hotspot ────────────────────────────────
 echo ""
 echo "📡 Setting up WiFi Hotspot..."
