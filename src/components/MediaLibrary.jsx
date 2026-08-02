@@ -111,8 +111,10 @@ export default function MediaLibrary() {
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || `Rename failed (${res.status})`);
       setRenaming(false);
-      setSelected(new Set([data.name]));   // keep the file selected under its new name
+      // Load first, then re-select: selecting the new name against the old file
+      // list would briefly resolve to nothing and blank the detail panel.
       await loadFiles(folder);
+      setSelected(new Set([data.name]));
       showToast(`✓ Renamed to "${data.name}"`);
     } catch (err) {
       showToast(`✗ ${err.message}`, true);

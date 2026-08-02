@@ -103,6 +103,11 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use('/uploads', express.static(UPLOAD_DIR));
+// A missing upload must 404 here. Without this it falls through to the SPA
+// catch-all at the bottom, which answers an <img>/<audio>/<video> request with
+// 200 + index.html — so a renamed or deleted file looks "available" and then
+// fails to decode, instead of erroring cleanly.
+app.use('/uploads', (req, res) => res.status(404).json({ error: 'File not found' }));
 
 // Only serve built frontend in production; in dev, Vite handles it on :5173
 const distPath = path.join(__dirname, 'dist');
@@ -230,6 +235,14 @@ app.patch('/api/files/:type/:filename', (req, res) => {
   if (!base) return res.status(400).json({ error: 'Name must contain letters or numbers' });
 
   const newName = base + ext;
+  // Enforce the invariant above. It does not hold for itself when the source
+  // has no extension — an upload named ".mp4" lands as "mp4" (path.extname of a
+  // leading-dot name is '') — and the base could then smuggle in a new one,
+  // e.g. "evil.html", which /uploads serves as text/html from our own origin.
+  if (path.extname(newName).toLowerCase() !== ext.toLowerCase()) {
+    return res.status(400).json({ error: 'Name cannot change the file type' });
+  }
+
   if (newName === src.name) return res.json({ success: true, name: newName, url: `/uploads/${type}/${encodeURIComponent(newName)}` });
 
   const dest = resolveUploadPath(type, newName);
