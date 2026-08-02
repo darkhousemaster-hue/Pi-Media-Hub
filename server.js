@@ -366,9 +366,10 @@ mark running "downloading"
 git fetch origin main || die "git fetch (network or credentials)"
 git reset --hard origin/main || die "git reset"
 
-# --include=dev is load-bearing. systemd sets NODE_ENV=production, this script
-# inherits it, and npm then treats that as --omit=dev: it would UNINSTALL vite
-# and react (both devDependencies) and the build below would fail.
+# Belt and braces. Everything the build needs now lives in "dependencies", so
+# this works without the flag, but systemd sets NODE_ENV=production and npm
+# reads that as --omit=dev — so anything build-related that ever lands back in
+# devDependencies would be silently uninstalled and break the build again.
 mark running "installing dependencies"
 npm install --include=dev || die "npm install"
 
