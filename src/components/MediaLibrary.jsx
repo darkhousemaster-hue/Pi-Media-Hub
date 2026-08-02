@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { apiFetch, uploadFiles } from '../api.js';
 
 const FOLDERS = {
@@ -11,6 +11,8 @@ const FOLDERS = {
 const fmtSize = b => !b ? '0 B' : b < 1e6 ? (b/1024).toFixed(1)+' KB' : b < 1e9 ? (b/1e6).toFixed(1)+' MB' : (b/1e9).toFixed(2)+' GB';
 const fmtDate = d => new Date(d).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
 const baseName = fn => fn.replace(/\.[^/.]+$/,'').replace(/[-_]/g,' ');
+const stripExt  = fn => fn.replace(/\.[^/.]+$/,'');
+const extOf     = fn => (fn.match(/\.[^/.]+$/) || [''])[0];
 const isImg = n => /\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i.test(n);
 const isVid = n => /\.(mp4|webm|ogg|mov|avi|mkv)$/i.test(n);
 const isAud = n => /\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(n);
@@ -29,6 +31,10 @@ export default function MediaLibrary() {
   const [inputKey, setInputKey]   = useState(0);
   const [toast, setToast]         = useState(null);
   const [deleting, setDeleting]   = useState(false);
+  const [renaming, setRenaming]   = useState(false);   // rename form open?
+  const [renameValue, setRenameValue] = useState('');
+  const [renameBusy, setRenameBusy]   = useState(false);
+  const renameInputRef = useRef(null);
 
   const showToast = useCallback((msg, err=false) => {
     setToast({msg,err}); setTimeout(()=>setToast(null), 3500);
@@ -48,7 +54,7 @@ export default function MediaLibrary() {
     setCounts(c);
   }
 
-  useEffect(() => { loadFiles(folder); loadCounts(); setSelected(new Set()); }, [folder]);
+  useEffect(() => { loadFiles(folder); loadCounts(); setSelected(new Set()); setRenaming(false); }, [folder]);
 
   async function doUpload(fileList, targetFolder) {
     if (!fileList?.length) return;
@@ -71,6 +77,7 @@ export default function MediaLibrary() {
     if (selected.size === 0) return;
     const names = [...selected];
     if (!confirm(`Delete ${names.length} file${names.length>1?'s':''}?`)) return;
+    setRenaming(false);
     setDeleting(true);
     let failed = 0;
     await Promise.all(names.map(async name => {
@@ -84,7 +91,39 @@ export default function MediaLibrary() {
     showToast(failed > 0 ? `✗ ${failed} failed to delete` : `✓ Deleted ${names.length} file${names.length>1?'s':''}`);
   }
 
+  // Open the rename form for one file (also makes it the single selection)
+  function startRename(name) {
+    setSelected(new Set([name]));
+    setRenameValue(stripExt(name));
+    setRenaming(true);
+  }
+
+  async function doRename(oldName) {
+    const next = renameValue.trim();
+    if (!next || next === stripExt(oldName)) { setRenaming(false); return; }
+    setRenameBusy(true);
+    try {
+      const res = await apiFetch(`/api/files/${folder}/${encodeURIComponent(oldName)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: next }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `Rename failed (${res.status})`);
+      setRenaming(false);
+      setSelected(new Set([data.name]));   // keep the file selected under its new name
+      await loadFiles(folder);
+      showToast(`✓ Renamed to "${data.name}"`);
+    } catch (err) {
+      showToast(`✗ ${err.message}`, true);
+      // Put the cursor back so the name can be corrected straight away
+      setTimeout(()=>renameInputRef.current?.focus(), 0);
+    }
+    setRenameBusy(false);
+  }
+
   function toggleSelect(name, e) {
+    setRenaming(false);
     // Shift-click or ctrl/cmd-click adds to selection; plain click sets single
     const next = new Set(selected);
     if (e.shiftKey || e.ctrlKey || e.metaKey || selected.size > 0) {
@@ -96,10 +135,11 @@ export default function MediaLibrary() {
   }
 
   function selectAll() {
+    setRenaming(false);
     setSelected(new Set(filtered.map(f=>f.name)));
   }
 
-  function clearSelection() { setSelected(new Set()); }
+  function clearSelection() { setRenaming(false); setSelected(new Set()); }
 
   const meta = FOLDERS[folder];
   const filtered = files.filter(f=>f.name.toLowerCase().includes(search.toLowerCase()));
@@ -201,7 +241,10 @@ export default function MediaLibrary() {
                 <span style={{fontWeight:600,color:'var(--gray-800)'}}>{selected.size} selected</span>
                 <button onClick={selectAll} style={{background:'none',border:'none',cursor:'pointer',fontSize:12,color:'var(--primary)',fontFamily:'var(--font)',padding:0}}>Select all</button>
                 <button onClick={clearSelection} style={{background:'none',border:'none',cursor:'pointer',fontSize:12,color:'var(--gray-400)',fontFamily:'var(--font)',padding:0}}>Clear</button>
-                <div style={{marginLeft:'auto'}}>
+                <div style={{marginLeft:'auto',display:'flex',gap:6}}>
+                  {selected.size === 1 && !renaming && (
+                    <button className="btn btn-ghost btn-sm" onClick={()=>startRename([...selected][0])}>✏️ Rename</button>
+                  )}
                   <button className="btn btn-danger btn-sm" onClick={deleteSelected} disabled={deleting}>
                     {deleting ? '⏳ Deleting…' : `🗑 Delete ${selected.size} file${selected.size>1?'s':''}`}
                   </button>
@@ -222,7 +265,8 @@ export default function MediaLibrary() {
                 <div key={file.name}
                   className={`file-card ${selected.has(file.name)?'selected':''}`}
                   onClick={e=>toggleSelect(file.name,e)}
-                  title="Click to select · Ctrl+click to multi-select">
+                  onDoubleClick={()=>startRename(file.name)}
+                  title="Click to select · Ctrl+click to multi-select · Double-click to rename">
                   <div className="file-thumb">
                     {isImg(file.name)?<img src={file.url} alt={file.name} loading="lazy"/>:<span style={{fontSize:28}}>{fileIcon(file.name)}</span>}
                   </div>
@@ -238,6 +282,8 @@ export default function MediaLibrary() {
             <div style={{flex:1,overflowY:'auto'}}>
               {filtered.map(file=>(
                 <div key={file.name} onClick={e=>toggleSelect(file.name,e)}
+                  onDoubleClick={()=>startRename(file.name)}
+                  title="Double-click to rename"
                   style={{display:'flex',alignItems:'center',gap:10,padding:'9px 14px',borderBottom:'1px solid var(--gray-100)',cursor:'pointer',background:selected.has(file.name)?'var(--primary-light)':'transparent'}}>
                   <div style={{width:18,height:18,border:`2px solid ${selected.has(file.name)?'var(--primary)':'var(--gray-300)'}`,borderRadius:4,background:selected.has(file.name)?'var(--primary)':'#fff',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
                     {selected.has(file.name)&&<span style={{color:'#fff',fontSize:10}}>✓</span>}
@@ -272,7 +318,38 @@ export default function MediaLibrary() {
               {(isVid(singleSelected.name)||folder==='instructionvideos')&&<video src={singleSelected.url} controls style={{width:'100%',aspectRatio:'16/9',objectFit:'contain',borderRadius:8,marginBottom:12,background:'#000'}}/>}
               {isAud(singleSelected.name)&&<div style={{padding:16,background:'var(--gray-100)',borderRadius:8,textAlign:'center',marginBottom:12}}><div style={{fontSize:36,marginBottom:10}}>🎵</div><audio src={singleSelected.url} controls style={{width:'100%'}}/></div>}
               {folder==='instructionvideos'&&<div style={{background:'rgba(124,58,237,.07)',border:'1px solid rgba(124,58,237,.2)',borderRadius:8,padding:'9px 12px',marginBottom:12,fontSize:12}}><div style={{fontWeight:700,color:'#6d28d9',marginBottom:3}}>▶ Button label</div><div style={{color:'#7c3aed',fontWeight:700,fontSize:15,textTransform:'capitalize'}}>{baseName(singleSelected.name)}</div></div>}
-              <div style={{fontWeight:700,fontSize:13,marginBottom:8,wordBreak:'break-all'}}>{singleSelected.name}</div>
+              {renaming ? (
+                <div style={{marginBottom:12}}
+                  onKeyDown={e=>{ if (e.key==='Escape' && !renameBusy) setRenaming(false); }}>
+                  <div style={{fontSize:11,fontWeight:700,color:'var(--gray-500)',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:6}}>Rename file</div>
+                  <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
+                    <input
+                      className="search-input"
+                      autoFocus
+                      aria-label={`New name for ${singleSelected.name}`}
+                      ref={renameInputRef}
+                      value={renameValue}
+                      disabled={renameBusy}
+                      onChange={e=>setRenameValue(e.target.value)}
+                      onFocus={e=>e.target.select()}
+                      onKeyDown={e=>{ if (e.key==='Enter') doRename(singleSelected.name); }}
+                      style={{flex:1,minWidth:0}}
+                    />
+                    <span style={{fontSize:12,color:'var(--gray-400)',fontWeight:600,flexShrink:0}}>{extOf(singleSelected.name)}</span>
+                  </div>
+                  <div style={{fontSize:11,color:'var(--gray-400)',marginBottom:8,lineHeight:1.5}}>
+                    Spaces become underscores. The extension stays the same.
+                  </div>
+                  <div style={{display:'flex',gap:7}}>
+                    <button className="btn btn-primary btn-sm" style={{flex:1}} disabled={renameBusy}
+                      onClick={()=>doRename(singleSelected.name)}>{renameBusy?'⏳ Saving…':'✓ Save'}</button>
+                    <button className="btn btn-ghost btn-sm" style={{flex:1}} disabled={renameBusy}
+                      onClick={()=>setRenaming(false)}>Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{fontWeight:700,fontSize:13,marginBottom:8,wordBreak:'break-all'}}>{singleSelected.name}</div>
+              )}
               <div style={{background:'var(--gray-50)',border:'1px solid var(--gray-200)',borderRadius:8,padding:10,fontSize:12,marginBottom:12}}>
                 {[['Size',fmtSize(singleSelected.size)],['Modified',fmtDate(singleSelected.modified)],['Type',singleSelected.name.split('.').pop().toUpperCase()]].map(([l,v])=>(
                   <div key={l} style={{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid var(--gray-100)'}}>
@@ -281,6 +358,7 @@ export default function MediaLibrary() {
                 ))}
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:7}}>
+                {!renaming && <button className="btn btn-ghost w-full" onClick={()=>startRename(singleSelected.name)}>✏️ Rename</button>}
                 <a href={singleSelected.url} download className="btn btn-outline w-full">⬇ Download</a>
                 <button className="btn btn-danger w-full" onClick={async () => {
                   const name = singleSelected.name;

@@ -110,12 +110,46 @@ if (process.env.NODE_ENV === 'production' && fs.existsSync(distPath)) {
   app.use(express.static(distPath));
 }
 
+// ─── File helpers ─────────────────────────────────────────────────────────────
+const VALID_TYPES = ['pictures', 'videos', 'music', 'instructionvideos'];
+
+// One naming rule for both uploads and renames, so a renamed file keeps exactly
+// the character set an uploaded one would have. Leading dots are stripped —
+// the file listing hides dotfiles, so a name like ".intro" would make the file
+// invisible in the library.
+function sanitizeBase(name) {
+  return name.replace(/[^a-zA-Z0-9._\- ]/g, '').trim().replace(/\s+/g, '_').replace(/^\.+/, '');
+}
+
+// True only when two paths are the *same* file on disk — which is what a
+// case-only rename looks like on a case-insensitive filesystem. Comparing names
+// instead would wrongly treat "clip.mp4" and "Clip.mp4" (two real files on the
+// Pi's case-sensitive filesystem) as one and overwrite the second.
+function isSameFile(a, b) {
+  try {
+    const sa = fs.statSync(a), sb = fs.statSync(b);
+    return sa.ino !== 0 && sa.ino === sb.ino && sa.dev === sb.dev;
+  } catch { return false; }
+}
+
+// Resolve a filename inside an upload folder, refusing anything that escapes it.
+// (Express already URI-decodes route params, so a name containing ../ or a
+// slash must never reach fs.)
+function resolveUploadPath(type, filename) {
+  if (!VALID_TYPES.includes(type)) return null;
+  const dir = path.join(UPLOAD_DIR, type);
+  const safe = path.basename(filename || '');
+  if (!safe || safe === '.' || safe === '..') return null;
+  const full = path.join(dir, safe);
+  if (path.dirname(path.resolve(full)) !== path.resolve(dir)) return null;
+  return { dir, name: safe, full };
+}
+
 // ─── Multer ───────────────────────────────────────────────────────────────────
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const type = req.params.type;
-    const validTypes = ['pictures', 'videos', 'music', 'instructionvideos'];
-    if (!validTypes.includes(type)) return cb(new Error('Invalid folder type: ' + type));
+    if (!VALID_TYPES.includes(type)) return cb(new Error('Invalid folder type: ' + type));
     const dir = path.join(UPLOAD_DIR, type);
     fs.mkdirSync(dir, { recursive: true }); // ensure exists
     cb(null, dir);
@@ -123,8 +157,7 @@ const storage = multer.diskStorage({
   filename: (req, file, cb) => {
     // Preserve spaces as underscores but keep extension intact
     const ext = path.extname(file.originalname);
-    const base = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9._\- ]/g, '').trim().replace(/\s+/g, '_');
-    cb(null, base + ext);
+    cb(null, sanitizeBase(path.basename(file.originalname, ext)) + ext);
   }
 });
 
@@ -179,9 +212,45 @@ app.post('/api/files/:type', (req, res) => {
   });
 });
 
+// Rename a file in place. The extension is always preserved — only the base
+// name changes — so the player never ends up with an unplayable file.
+app.patch('/api/files/:type/:filename', (req, res) => {
+  const { type } = req.params;
+  const src = resolveUploadPath(type, req.params.filename);
+  if (!src) return res.status(400).json({ error: 'Invalid file' });
+  if (!fs.existsSync(src.full)) return res.status(404).json({ error: 'File not found' });
+
+  const ext = path.extname(src.name);
+  const requested = String(req.body?.name ?? '');
+  // Tolerate the user typing the extension back in ("clip.mp4" → "clip")
+  const withoutExt = requested.toLowerCase().endsWith(ext.toLowerCase())
+    ? requested.slice(0, requested.length - ext.length)
+    : requested;
+  const base = sanitizeBase(withoutExt);
+  if (!base) return res.status(400).json({ error: 'Name must contain letters or numbers' });
+
+  const newName = base + ext;
+  if (newName === src.name) return res.json({ success: true, name: newName, url: `/uploads/${type}/${encodeURIComponent(newName)}` });
+
+  const dest = resolveUploadPath(type, newName);
+  if (!dest) return res.status(400).json({ error: 'Invalid name' });
+  if (fs.existsSync(dest.full) && !isSameFile(src.full, dest.full)) {
+    return res.status(409).json({ error: `"${newName}" already exists` });
+  }
+
+  try {
+    fs.renameSync(src.full, dest.full);
+    io.emit('media-updated', { type });
+    res.json({ success: true, name: dest.name, url: `/uploads/${type}/${encodeURIComponent(dest.name)}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.delete('/api/files/:type/:filename', (req, res) => {
-  const filePath = path.join(UPLOAD_DIR, req.params.type, decodeURIComponent(req.params.filename));
-  try { fs.unlinkSync(filePath); io.emit('media-updated', { type: req.params.type }); res.json({ success: true }); }
+  const target = resolveUploadPath(req.params.type, req.params.filename);
+  if (!target) return res.status(400).json({ error: 'Invalid file' });
+  try { fs.unlinkSync(target.full); io.emit('media-updated', { type: req.params.type }); res.json({ success: true }); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
