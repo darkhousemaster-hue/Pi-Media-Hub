@@ -320,17 +320,62 @@ app.post('/api/system/restart-network', (req, res) => {
 });
 
 // ─── Update endpoint ─────────────────────────────────────────────────────────
+const STATUS_FILE = path.join(__dirname, '_update-status.json');
+
+function readUpdateStatus() {
+  try { return JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8')); }
+  catch { return null; }
+}
+
+// Reaching this point means we are the restarted process, so any update that
+// was still "running" when it killed us actually finished. A failed update
+// exits without killing anything, so its status survives for the UI to read.
+(function settleUpdateStatus() {
+  const s = readUpdateStatus();
+  if (s?.state !== 'running') return;
+  try { fs.writeFileSync(STATUS_FILE, JSON.stringify({ ...s, state: 'done', at: Date.now() })); } catch {}
+})();
+
+// Version + boot time. The control UI polls this after an update: the old
+// server keeps answering normally while git/npm/build run, so "the server
+// responds" means nothing. A changed bootTime is the only proof of a restart.
+app.get('/api/system/info', (req, res) => {
+  let version = 'unknown';
+  try { version = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version; } catch {}
+  res.json({ version, bootTime: SERVER_BOOT_TIME, update: readUpdateStatus() });
+});
+
 app.post('/api/system/update', (req, res) => {
+  try { fs.unlinkSync(STATUS_FILE); } catch {}
   res.json({ success: true, message: 'Update started' });
 
   const script = `#!/bin/bash
 LOG=/tmp/pi-media-hub-update.log
+STATUS="${STATUS_FILE}"
 exec >> $LOG 2>&1
+
+mark(){ printf '{"state":"%s","step":"%s","at":%s}' "$1" "$2" "$(date +%s)000" > "$STATUS"; }
+die(){ mark failed "$1"; echo "=== FAILED at: $1 ==="; exit 1; }
+
 echo "=== UPDATE STARTED $(date) ==="
-cd ${__dirname}
-git pull origin main
-npm install --silent
-npm run build
+cd "${__dirname}" || die "open install directory"
+
+# Mirror origin instead of merging. npm rewrites package-lock.json, which is
+# tracked, and a plain "git pull" then aborts on the dirty working tree.
+mark running "downloading"
+git fetch origin main || die "git fetch (network or credentials)"
+git reset --hard origin/main || die "git reset"
+
+# --include=dev is load-bearing. systemd sets NODE_ENV=production, this script
+# inherits it, and npm then treats that as --omit=dev: it would UNINSTALL vite
+# and react (both devDependencies) and the build below would fail.
+mark running "installing dependencies"
+npm install --include=dev || die "npm install"
+
+mark running "building"
+npm run build || die "npm run build"
+
+mark running "restarting"
 echo "=== BUILD DONE - killing process so systemd restarts it ==="
 # Kill the node process — systemd Restart=always will bring it back with new code
 kill ${process.pid}

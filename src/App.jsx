@@ -8,7 +8,7 @@ import SlideshowConfig from './components/SlideshowConfig.jsx';
 import NetworkStatus from './components/NetworkStatus.jsx';
 
 // Read version from package.json at build time
-const APP_VERSION = '1.0.13';
+const APP_VERSION = '1.0.14';
 
 const SOCKET_URL = import.meta.env.DEV ? 'http://localhost:3000' : '/';
 const TRANSPORTS = import.meta.env.DEV ? ['polling'] : ['websocket', 'polling'];
@@ -84,25 +84,43 @@ export default function App() {
     if (!confirm('Pull latest version from GitHub and rebuild?\nThe app will restart automatically.')) return;
     setUpdating(true);
     toast_('⬆ Update started…');
+    // Remember which server instance we are talking to. git + npm + build take
+    // a couple of minutes on a Pi and the OLD server answers normally the whole
+    // time, so "the server responded" is not the signal we are waiting for —
+    // a changed bootTime is.
+    let bootBefore = null;
+    try { bootBefore = (await apiFetch('/api/system/info').then(r => r.json())).bootTime; } catch {}
+
     try {
       await apiFetch('/api/system/update', { method: 'POST' });
-      // Start polling immediately — server will be down briefly during restart
-      let attempts = 0;
-      function poll() {
-        fetch('/api/config')
-          .then(r => r.json())
-          .then(() => { setUpdating(false); window.location.reload(); })
-          .catch(() => {
-            attempts++;
-            if (attempts < 60) setTimeout(poll, 3000); // try for 3 minutes
-            else { setUpdating(false); toast_('Update timed out — check Pi logs'); }
-          });
-      }
-      setTimeout(poll, 5000); // first check after 5s
     } catch {
       toast_('Update failed — check Pi has git and internet access');
       setUpdating(false);
+      return;
     }
+
+    let attempts = 0, sawDown = false;
+    function retry() {
+      attempts++;
+      if (attempts < 100) setTimeout(poll, 3000); // ~5 minutes
+      else { setUpdating(false); toast_('Update timed out — see /tmp/pi-media-hub-update.log'); }
+    }
+    function poll() {
+      fetch('/api/system/info')
+        .then(r => r.json())
+        .then(info => {
+          const restarted = bootBefore === null ? sawDown : info.bootTime !== bootBefore;
+          if (restarted) { setUpdating(false); window.location.reload(); return; }
+          if (info.update?.state === 'failed') {
+            setUpdating(false);
+            toast_(`Update failed while ${info.update.step} — see /tmp/pi-media-hub-update.log`);
+            return;
+          }
+          retry();
+        })
+        .catch(() => { sawDown = true; retry(); });
+    }
+    setTimeout(poll, 3000);
   }
 
   const navItems = [
