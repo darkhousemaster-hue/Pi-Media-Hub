@@ -1,60 +1,62 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { apiFetch, uploadFiles } from '../api.js';
+import { useApp } from '../context.js';
+import Icon from './Icon.jsx';
 
 const FOLDERS = {
-  pictures:          { icon:'🖼️', label:'Pictures',          accept:'image/*',  color:'#3b82f6' },
-  videos:            { icon:'🎬', label:'Videos',             accept:'video/*',  color:'#ef4444' },
-  music:             { icon:'🎵', label:'Music',              accept:'audio/*',  color:'#22c55e' },
-  instructionvideos: { icon:'▶',  label:'Instruction Videos', accept:'video/*',  color:'#7c3aed' },
+  pictures:          { icon: 'image', label: 'Pictures', short: 'Pictures', accept: 'image/*' },
+  videos:            { icon: 'film',  label: 'Videos',   short: 'Videos',   accept: 'video/*' },
+  music:             { icon: 'music', label: 'Music',    short: 'Music',    accept: 'audio/*' },
+  instructionvideos: { icon: 'cue',   label: 'Instruction Videos', short: 'Clips', accept: 'video/*' },
 };
 
 const fmtSize = b => !b ? '0 B' : b < 1e6 ? (b/1024).toFixed(1)+' KB' : b < 1e9 ? (b/1e6).toFixed(1)+' MB' : (b/1e9).toFixed(2)+' GB';
-const fmtDate = d => new Date(d).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
-const baseName = fn => fn.replace(/\.[^/.]+$/,'').replace(/[-_]/g,' ');
-const stripExt  = fn => fn.replace(/\.[^/.]+$/,'');
-const extOf     = fn => (fn.match(/\.[^/.]+$/) || [''])[0];
+const fmtDate = d => new Date(d).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' });
+const baseName = fn => fn.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+const stripExt = fn => fn.replace(/\.[^/.]+$/, '');
+const extOf    = fn => (fn.match(/\.[^/.]+$/) || [''])[0];
 const isImg = n => /\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i.test(n);
-const isVid = n => /\.(mp4|webm|ogg|mov|avi|mkv)$/i.test(n);
-const isAud = n => /\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(n);
-const fileIcon = n => isImg(n)?'🖼️':isVid(n)?'🎬':isAud(n)?'🎵':'📄';
+const isVid = n => /\.(mp4|webm|ogg|mov|avi|mkv|m4v)$/i.test(n);
+const isAud = n => /\.(mp3|wav|ogg|flac|aac|m4a|opus)$/i.test(n);
+const iconFor = n => isImg(n) ? 'image' : isVid(n) ? 'film' : isAud(n) ? 'music' : 'image';
 
 export default function MediaLibrary() {
-  const [folder, setFolder]       = useState('pictures');
-  const [files, setFiles]         = useState([]);
-  const [counts, setCounts]       = useState({});
-  const [selected, setSelected]   = useState(new Set()); // multi-select
-  const [search, setSearch]       = useState('');
+  const { toast_ } = useApp();
+  const [folder, setFolder]     = useState('pictures');
+  const [files, setFiles]       = useState([]);
+  const [counts, setCounts]     = useState({});
+  const [selected, setSelected] = useState(new Set());
+  const [search, setSearch]     = useState('');
+  const [viewMode, setViewMode] = useState('list');
   const [uploading, setUploading] = useState(false);
-  const [uploadMsg, setUploadMsg]   = useState('');
-  const [dragOver, setDragOver]   = useState(false);
-  const [viewMode, setViewMode]   = useState('grid');
-  const [inputKey, setInputKey]   = useState(0);
-  const [toast, setToast]         = useState(null);
-  const [deleting, setDeleting]   = useState(false);
-  const [renaming, setRenaming]   = useState(false);   // rename form open?
+  const [uploadMsg, setUploadMsg] = useState('');
+  const [dragOver, setDragOver] = useState(false);
+  const [inputKey, setInputKey] = useState(0);
+  const [deleting, setDeleting] = useState(false);
+  const [openFile, setOpenFile] = useState(null);   // filename shown in the sheet
+  const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState('');
-  const [renameBusy, setRenameBusy]   = useState(false);
+  const [renameBusy, setRenameBusy] = useState(false);
   const renameInputRef = useRef(null);
 
-  const showToast = useCallback((msg, err=false) => {
-    setToast({msg,err}); setTimeout(()=>setToast(null), 3500);
+  const loadFiles = useCallback(async f => {
+    try { setFiles(await apiFetch(`/api/files/${f}`).then(r => r.json())); }
+    catch { setFiles([]); }
   }, []);
 
-  async function loadFiles(f) {
-    try { setFiles(await apiFetch(`/api/files/${f}`).then(r=>r.json())); }
-    catch { setFiles([]); }
-  }
-
-  async function loadCounts() {
+  const loadCounts = useCallback(async () => {
     const c = {};
     await Promise.all(Object.keys(FOLDERS).map(async k => {
-      try { c[k] = (await apiFetch(`/api/files/${k}`).then(r=>r.json())).length; }
+      try { c[k] = (await apiFetch(`/api/files/${k}`).then(r => r.json())).length; }
       catch { c[k] = 0; }
     }));
     setCounts(c);
-  }
+  }, []);
 
-  useEffect(() => { loadFiles(folder); loadCounts(); setSelected(new Set()); setRenaming(false); }, [folder]);
+  useEffect(() => {
+    loadFiles(folder); loadCounts();
+    setSelected(new Set()); setOpenFile(null); setRenaming(false);
+  }, [folder, loadFiles, loadCounts]);
 
   async function doUpload(fileList, targetFolder) {
     if (!fileList?.length) return;
@@ -63,39 +65,43 @@ export default function MediaLibrary() {
     setUploading(true);
     setUploadMsg(total > 1 ? `Uploading 0 / ${total}…` : 'Uploading…');
     try {
-      const data = await uploadFiles(f, fileList, (done, all) => {
-        setUploadMsg(`Uploading ${done} / ${all}…`);
-      });
-      showToast(`✓ Uploaded ${data.files.length} file${data.files.length !== 1 ? 's' : ''}`);
+      const data = await uploadFiles(f, fileList, (done, all) => setUploadMsg(`Uploading ${done} / ${all}…`));
+      toast_(`Uploaded ${data.files.length} file${data.files.length !== 1 ? 's' : ''}`);
       if (f === folder) await loadFiles(folder);
       await loadCounts();
-    } catch(err) { showToast(`✗ ${err.message}`, true); }
-    finally { setUploading(false); setUploadMsg(''); setInputKey(k=>k+1); }
+    } catch (err) { toast_(err.message, true); }
+    finally { setUploading(false); setUploadMsg(''); setInputKey(k => k + 1); }
   }
 
-  async function deleteSelected() {
-    if (selected.size === 0) return;
-    const names = [...selected];
-    if (!confirm(`Delete ${names.length} file${names.length>1?'s':''}?`)) return;
-    setRenaming(false);
+  async function deleteNames(names) {
+    if (!names.length) return;
+    if (!confirm(`Delete ${names.length} file${names.length > 1 ? 's' : ''}?`)) return;
     setDeleting(true);
     let failed = 0;
     await Promise.all(names.map(async name => {
-      try { await apiFetch(`/api/files/${folder}/${encodeURIComponent(name)}`, {method:'DELETE'}); }
-      catch { failed++; }
+      try {
+        const r = await apiFetch(`/api/files/${folder}/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        if (!r.ok) failed++;
+      } catch { failed++; }
     }));
-    setSelected(new Set());
-    await loadFiles(folder);
-    await loadCounts();
+    setSelected(new Set()); setOpenFile(null); setRenaming(false);
+    await loadFiles(folder); await loadCounts();
     setDeleting(false);
-    showToast(failed > 0 ? `✗ ${failed} failed to delete` : `✓ Deleted ${names.length} file${names.length>1?'s':''}`);
+    toast_(failed ? `${failed} could not be deleted` : `Deleted ${names.length} file${names.length > 1 ? 's' : ''}`, !!failed);
   }
 
-  // Open the rename form for one file (also makes it the single selection)
-  function startRename(name) {
-    setSelected(new Set([name]));
+  function toggleSelect(name) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  }
+
+  function openSheet(name) {
+    setOpenFile(name);
     setRenameValue(stripExt(name));
-    setRenaming(true);
+    setRenaming(false);
   }
 
   async function doRename(oldName) {
@@ -111,283 +117,220 @@ export default function MediaLibrary() {
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || `Rename failed (${res.status})`);
       setRenaming(false);
-      // Load first, then re-select: selecting the new name against the old file
-      // list would briefly resolve to nothing and blank the detail panel.
       await loadFiles(folder);
-      setSelected(new Set([data.name]));
-      showToast(`✓ Renamed to "${data.name}"`);
+      setOpenFile(data.name);
+      setRenameValue(stripExt(data.name));
+      toast_(`Renamed to ${data.name}`);
     } catch (err) {
-      showToast(`✗ ${err.message}`, true);
-      // Put the cursor back so the name can be corrected straight away
-      setTimeout(()=>renameInputRef.current?.focus(), 0);
+      toast_(err.message, true);
+      setTimeout(() => renameInputRef.current?.focus(), 0);
     }
     setRenameBusy(false);
   }
 
-  function toggleSelect(name, e) {
-    setRenaming(false);
-    // Shift-click or ctrl/cmd-click adds to selection; plain click sets single
-    const next = new Set(selected);
-    if (e.shiftKey || e.ctrlKey || e.metaKey || selected.size > 0) {
-      if (next.has(name)) next.delete(name); else next.add(name);
-    } else {
-      if (next.has(name) && next.size === 1) next.clear(); else { next.clear(); next.add(name); }
-    }
-    setSelected(next);
-  }
-
-  function selectAll() {
-    setRenaming(false);
-    setSelected(new Set(filtered.map(f=>f.name)));
-  }
-
-  function clearSelection() { setRenaming(false); setSelected(new Set()); }
-
+  const filtered = files.filter(f => f.name.toLowerCase().includes(search.toLowerCase()));
+  const current = openFile ? files.find(f => f.name === openFile) : null;
   const meta = FOLDERS[folder];
-  const filtered = files.filter(f=>f.name.toLowerCase().includes(search.toLowerCase()));
-  const singleSelected = selected.size === 1 ? files.find(f=>f.name===[...selected][0]) : null;
-
-  // Direct upload handler - not a component to avoid remount issues
-  function uploadLabel(label, targetFolder, btnClass) {
-    return (
-      <label className={btnClass || 'btn btn-primary'} style={{cursor:'pointer'}}>
-        {uploading ? (uploadMsg || 'Uploading…') : label}
-        <input
-          key={`ul-${targetFolder||folder}-${inputKey}`}
-          type="file" multiple
-          accept={FOLDERS[targetFolder||folder]?.accept || meta.accept}
-          style={{display:'none'}}
-          disabled={uploading}
-          onChange={e => { if (targetFolder) setFolder(targetFolder); doUpload(e.target.files, targetFolder || folder); }}
-        />
-      </label>
-    );
-  }
 
   return (
     <>
-      <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:20,flexWrap:'wrap',gap:12}}>
-        <div>
-          <h1 style={{fontSize:24,fontWeight:800,marginBottom:4}}>Media Library</h1>
-          <p style={{color:'var(--gray-500)'}}>Manage pictures, music, videos and instruction videos</p>
-        </div>
-        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          <button className="btn btn-ghost" onClick={()=>{loadFiles(folder);loadCounts();}}>↺ Refresh</button>
-          {uploadLabel("⬆ Upload Files")}
-        </div>
+      <div className="chips">
+        {Object.entries(FOLDERS).map(([k, { icon, short }]) => (
+          <button key={k} className={`chip ${folder === k ? 'on' : ''}`}
+            aria-pressed={folder === k} onClick={() => { setFolder(k); setSearch(''); }}>
+            <Icon name={icon} size="sm" />{short}
+            <span className="c">{counts[k] ?? '—'}</span>
+          </button>
+        ))}
       </div>
 
-      <div className="media-layout">
-        {/* Sidebar */}
-        <div className="media-sidebar">
-          <div style={{fontWeight:700,fontSize:12,color:'var(--gray-500)',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:8}}>Library</div>
-          {Object.entries(FOLDERS).map(([k,{icon,label}])=>(
-            <div key={k} className={`folder-item ${folder===k?'active':''}`}
-              onClick={()=>{setFolder(k);setSearch('');}}>
-              <span style={{fontSize:16}}>{icon}</span>
-              <div style={{flex:1,minWidth:0}}>
-                <div className="folder-name">{label}</div>
-                <div className="folder-count">{counts[k]??'—'} files</div>
-              </div>
-              {k==='instructionvideos'&&<span style={{fontSize:9,background:'#7c3aed',color:'#fff',borderRadius:4,padding:'1px 4px',fontWeight:700}}>NEW</span>}
-            </div>
-          ))}
+      <div className={dragOver ? 'drop' : ''}
+        onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={e => { e.preventDefault(); setDragOver(false); doUpload(e.dataTransfer.files); }}>
 
-          <div style={{marginTop:16,paddingTop:14,borderTop:'1px solid var(--gray-200)'}}>
-            <div style={{fontWeight:700,fontSize:12,color:'var(--gray-500)',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:8}}>Quick Upload</div>
-            <div style={{display:'flex',flexDirection:'column',gap:5}}>
-              {Object.entries(FOLDERS).map(([k,{icon,label,accept}])=>(
-                <label key={k} style={{display:'flex',alignItems:'center',gap:9,padding:'8px 10px',borderRadius:8,background:'var(--gray-50)',border:'1px solid var(--gray-200)',cursor:'pointer',transition:'all .15s'}}
-                  onMouseEnter={e=>{e.currentTarget.style.background='var(--primary-light)';e.currentTarget.style.borderColor='var(--primary)';}}
-                  onMouseLeave={e=>{e.currentTarget.style.background='var(--gray-50)';e.currentTarget.style.borderColor='var(--gray-200)';}}>
-                  <input key={`q-${k}-${inputKey}`} type="file" multiple accept={accept} style={{display:'none'}}
-                    disabled={uploading} onChange={e=>{setFolder(k);doUpload(e.target.files,k);}}/><span style={{fontSize:16}}>{icon}</span>
-                  <span style={{fontSize:12,fontWeight:500,color:'var(--gray-700)',flex:1}}>Add {label}</span>
-                  <span style={{fontSize:11,color:'var(--gray-400)'}}>⬆</span>
-                </label>
-              ))}
-            </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div className="search">
+            <Icon name="search" size="sm" />
+            <input value={search} onChange={e => setSearch(e.target.value)}
+              placeholder={`Search ${meta.short.toLowerCase()}`} aria-label={`Search ${meta.label}`} />
           </div>
-          {folder==='instructionvideos'&&(
-            <div style={{marginTop:12,padding:'9px 11px',background:'rgba(124,58,237,.07)',border:'1px solid rgba(124,58,237,.2)',borderRadius:8,fontSize:11,color:'#6d28d9',lineHeight:1.5}}>
-              💡 Filename = button label in Play Instructions
-            </div>
-          )}
+          <div className="vtoggle">
+            <button className={`vbtn ${viewMode === 'list' ? 'on' : ''}`} aria-label="List view"
+              aria-pressed={viewMode === 'list'} onClick={() => setViewMode('list')}><Icon name="list" size="sm" /></button>
+            <button className={`vbtn ${viewMode === 'grid' ? 'on' : ''}`} aria-label="Grid view"
+              aria-pressed={viewMode === 'grid'} onClick={() => setViewMode('grid')}><Icon name="grid" size="sm" /></button>
+          </div>
         </div>
 
-        {/* File grid */}
-        <div className="media-main"
-          onDragOver={e=>{e.preventDefault();setDragOver(true);}}
-          onDragLeave={()=>setDragOver(false)}
-          onDrop={e=>{e.preventDefault();setDragOver(false);doUpload(e.dataTransfer.files);}}
-          style={{outline:dragOver?'3px dashed var(--primary)':'none',outlineOffset:-3}}>
-
-          <div className="media-toolbar">
-            <input className="search-input" placeholder="Search files…" value={search} onChange={e=>setSearch(e.target.value)}/>
-            <div style={{display:'flex',gap:4,marginLeft:'auto'}}>
-              <button className={`filter-btn ${viewMode==='grid'?'active':''}`} onClick={()=>setViewMode('grid')}>⊞</button>
-              <button className={`filter-btn ${viewMode==='list'?'active':''}`} onClick={()=>setViewMode('list')}>☰</button>
-            </div>
-          </div>
-
-          {/* Selection toolbar */}
-          <div style={{padding:'6px 14px',fontSize:12,borderBottom:'1px solid var(--gray-100)',display:'flex',alignItems:'center',gap:10,minHeight:36,flexWrap:'wrap'}}>
-            {selected.size === 0 ? (
-              <>
-                <span style={{color:'var(--gray-400)'}}>{meta.icon} {filtered.length} file{filtered.length!==1?'s':''}</span>
-                {filtered.length > 0 && <button onClick={selectAll} style={{background:'none',border:'none',cursor:'pointer',fontSize:12,color:'var(--primary)',fontFamily:'var(--font)',padding:0}}>Select all</button>}
-                {dragOver && <span style={{color:'var(--primary)',fontWeight:600}}>Drop to upload →</span>}
-              </>
-            ) : (
-              <>
-                <span style={{fontWeight:600,color:'var(--gray-800)'}}>{selected.size} selected</span>
-                <button onClick={selectAll} style={{background:'none',border:'none',cursor:'pointer',fontSize:12,color:'var(--primary)',fontFamily:'var(--font)',padding:0}}>Select all</button>
-                <button onClick={clearSelection} style={{background:'none',border:'none',cursor:'pointer',fontSize:12,color:'var(--gray-400)',fontFamily:'var(--font)',padding:0}}>Clear</button>
-                <div style={{marginLeft:'auto',display:'flex',gap:6}}>
-                  {selected.size === 1 && !renaming && (
-                    <button className="btn btn-ghost btn-sm" onClick={()=>startRename([...selected][0])}>✏️ Rename</button>
-                  )}
-                  <button className="btn btn-danger btn-sm" onClick={deleteSelected} disabled={deleting}>
-                    {deleting ? '⏳ Deleting…' : `🗑 Delete ${selected.size} file${selected.size>1?'s':''}`}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-
-          {filtered.length===0 ? (
-            <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:10,color:'var(--gray-400)',padding:32}}>
-              <span style={{fontSize:40}}>{meta.icon}</span>
-              <div style={{fontSize:15,fontWeight:600}}>No {meta.label.toLowerCase()} yet</div>
-              {uploadLabel(`Upload ${meta.label}`, undefined, "btn btn-outline")}
-            </div>
-          ) : viewMode==='grid' ? (
-            <div className="files-grid">
-              {filtered.map(file=>(
-                <div key={file.name}
-                  className={`file-card ${selected.has(file.name)?'selected':''}`}
-                  onClick={e=>toggleSelect(file.name,e)}
-                  onDoubleClick={()=>startRename(file.name)}
-                  title="Click to select · Ctrl+click to multi-select · Double-click to rename">
-                  <div className="file-thumb">
-                    {isImg(file.name)?<img src={file.url} alt={file.name} loading="lazy"/>:<span style={{fontSize:28}}>{fileIcon(file.name)}</span>}
-                  </div>
-                  <div className="file-info">
-                    <div className="file-name" title={file.name} style={folder==='instructionvideos'?{fontWeight:700,color:'#7c3aed',textTransform:'capitalize'}:{}}>{folder==='instructionvideos'?baseName(file.name):file.name}</div>
-                    <div className="file-meta">{fmtSize(file.size)}</div>
-                  </div>
-                  {selected.has(file.name)&&<div className="file-check">✓</div>}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={{flex:1,overflowY:'auto'}}>
-              {filtered.map(file=>(
-                <div key={file.name} onClick={e=>toggleSelect(file.name,e)}
-                  onDoubleClick={()=>startRename(file.name)}
-                  title="Double-click to rename"
-                  style={{display:'flex',alignItems:'center',gap:10,padding:'9px 14px',borderBottom:'1px solid var(--gray-100)',cursor:'pointer',background:selected.has(file.name)?'var(--primary-light)':'transparent'}}>
-                  <div style={{width:18,height:18,border:`2px solid ${selected.has(file.name)?'var(--primary)':'var(--gray-300)'}`,borderRadius:4,background:selected.has(file.name)?'var(--primary)':'#fff',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-                    {selected.has(file.name)&&<span style={{color:'#fff',fontSize:10}}>✓</span>}
-                  </div>
-                  <span style={{fontSize:20,flexShrink:0}}>{fileIcon(file.name)}</span>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:13,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:folder==='instructionvideos'?'#7c3aed':'inherit'}}>{folder==='instructionvideos'?baseName(file.name):file.name}</div>
-                    <div style={{fontSize:10,color:'var(--gray-400)'}}>{fmtSize(file.size)}</div>
-                  </div>
-                  <div style={{fontSize:11,color:'var(--gray-400)',whiteSpace:'nowrap'}}>{fmtDate(file.modified)}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Detail panel */}
-        <div className="media-detail">
-          {selected.size > 1 ? (
-            <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:12,textAlign:'center',minHeight:200}}>
-              <span style={{fontSize:40}}>📂</span>
-              <div style={{fontWeight:700,fontSize:16}}>{selected.size} files selected</div>
-              <div style={{fontSize:13,color:'var(--gray-500)'}}>{[...selected].map(n=>folder==='instructionvideos'?baseName(n):n).join(', ')}</div>
-              <button className="btn btn-danger" onClick={deleteSelected} disabled={deleting} style={{marginTop:8}}>
-                {deleting?'⏳ Deleting…':`🗑 Delete all ${selected.size} files`}
-              </button>
-              <button className="btn btn-ghost" onClick={clearSelection}>Clear selection</button>
-            </div>
-          ) : singleSelected ? (
+        <div className="selbar">
+          {selected.size === 0 ? (
             <>
-              {isImg(singleSelected.name)&&<img src={singleSelected.url} alt={singleSelected.name} style={{width:'100%',aspectRatio:'16/10',objectFit:'cover',borderRadius:8,marginBottom:12}}/>}
-              {(isVid(singleSelected.name)||folder==='instructionvideos')&&<video src={singleSelected.url} controls style={{width:'100%',aspectRatio:'16/9',objectFit:'contain',borderRadius:8,marginBottom:12,background:'#000'}}/>}
-              {isAud(singleSelected.name)&&<div style={{padding:16,background:'var(--gray-100)',borderRadius:8,textAlign:'center',marginBottom:12}}><div style={{fontSize:36,marginBottom:10}}>🎵</div><audio src={singleSelected.url} controls style={{width:'100%'}}/></div>}
-              {folder==='instructionvideos'&&<div style={{background:'rgba(124,58,237,.07)',border:'1px solid rgba(124,58,237,.2)',borderRadius:8,padding:'9px 12px',marginBottom:12,fontSize:12}}><div style={{fontWeight:700,color:'#6d28d9',marginBottom:3}}>▶ Button label</div><div style={{color:'#7c3aed',fontWeight:700,fontSize:15,textTransform:'capitalize'}}>{baseName(singleSelected.name)}</div></div>}
-              {renaming ? (
-                <div style={{marginBottom:12}}
-                  onKeyDown={e=>{ if (e.key==='Escape' && !renameBusy) setRenaming(false); }}>
-                  <div style={{fontSize:11,fontWeight:700,color:'var(--gray-500)',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:6}}>Rename file</div>
-                  <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
-                    <input
-                      className="search-input"
-                      autoFocus
-                      aria-label={`New name for ${singleSelected.name}`}
-                      ref={renameInputRef}
-                      value={renameValue}
-                      disabled={renameBusy}
-                      onChange={e=>setRenameValue(e.target.value)}
-                      onFocus={e=>e.target.select()}
-                      onKeyDown={e=>{ if (e.key==='Enter') doRename(singleSelected.name); }}
-                      style={{flex:1,minWidth:0}}
-                    />
-                    <span style={{fontSize:12,color:'var(--gray-400)',fontWeight:600,flexShrink:0}}>{extOf(singleSelected.name)}</span>
-                  </div>
-                  <div style={{fontSize:11,color:'var(--gray-400)',marginBottom:8,lineHeight:1.5}}>
-                    Spaces become underscores. The extension stays the same.
-                  </div>
-                  <div style={{display:'flex',gap:7}}>
-                    <button className="btn btn-primary btn-sm" style={{flex:1}} disabled={renameBusy}
-                      onClick={()=>doRename(singleSelected.name)}>{renameBusy?'⏳ Saving…':'✓ Save'}</button>
-                    <button className="btn btn-ghost btn-sm" style={{flex:1}} disabled={renameBusy}
-                      onClick={()=>setRenaming(false)}>Cancel</button>
-                  </div>
-                </div>
-              ) : (
-                <div style={{fontWeight:700,fontSize:13,marginBottom:8,wordBreak:'break-all'}}>{singleSelected.name}</div>
+              <span>{filtered.length} file{filtered.length !== 1 ? 's' : ''}</span>
+              {filtered.length > 0 && (
+                <button className="link" onClick={() => setSelected(new Set(filtered.map(f => f.name)))}>Select all</button>
               )}
-              <div style={{background:'var(--gray-50)',border:'1px solid var(--gray-200)',borderRadius:8,padding:10,fontSize:12,marginBottom:12}}>
-                {[['Size',fmtSize(singleSelected.size)],['Modified',fmtDate(singleSelected.modified)],['Type',singleSelected.name.split('.').pop().toUpperCase()]].map(([l,v])=>(
-                  <div key={l} style={{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid var(--gray-100)'}}>
-                    <span style={{color:'var(--gray-500)'}}>{l}</span><span style={{fontWeight:600}}>{v}</span>
-                  </div>
-                ))}
-              </div>
-              <div style={{display:'flex',flexDirection:'column',gap:7}}>
-                {!renaming && <button className="btn btn-ghost w-full" onClick={()=>startRename(singleSelected.name)}>✏️ Rename</button>}
-                <a href={singleSelected.url} download className="btn btn-outline w-full">⬇ Download</a>
-                <button className="btn btn-danger w-full" onClick={async () => {
-                  const name = singleSelected.name;
-                  if (!confirm(`Delete "${name}"?`)) return;
-                  setDeleting(true);
-                  try {
-                    await apiFetch(`/api/files/${folder}/${encodeURIComponent(name)}`, {method:'DELETE'});
-                    showToast('✓ Deleted');
-                    setSelected(new Set());
-                    await loadFiles(folder);
-                    await loadCounts();
-                  } catch { showToast('✗ Delete failed', true); }
-                  setDeleting(false);
-                }}>🗑 Delete</button>
-              </div>
+              <button className="link link-mute" onClick={() => { loadFiles(folder); loadCounts(); }}>Refresh</button>
+              {dragOver && <span style={{ color: 'var(--brand-hi)', fontWeight: 600 }}>Drop to upload</span>}
+              <label className="b b-key b-sm" style={{ marginLeft: 'auto', cursor: 'pointer' }}>
+                <Icon name="upload" size="sm" />{uploading ? (uploadMsg || 'Uploading…') : 'Upload'}
+                <input key={`u-${folder}-${inputKey}`} type="file" multiple accept={meta.accept}
+                  style={{ display: 'none' }} disabled={uploading}
+                  onChange={e => doUpload(e.target.files)} />
+              </label>
             </>
           ) : (
-            <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:10,color:'var(--gray-400)',textAlign:'center',minHeight:200}}>
-              <span style={{fontSize:36}}>←</span>
-              <div style={{fontWeight:600}}>Select files</div>
-              <div style={{fontSize:12}}>Click to select one · Ctrl+click for multiple</div>
-            </div>
+            <>
+              <span style={{ color: 'var(--tx)', fontWeight: 600 }}>{selected.size} selected</span>
+              <button className="link" onClick={() => setSelected(new Set(filtered.map(f => f.name)))}>Select all</button>
+              <button className="link link-mute" onClick={() => setSelected(new Set())}>Clear</button>
+              <button className="b b-danger b-sm" style={{ marginLeft: 'auto' }} disabled={deleting}
+                onClick={() => deleteNames([...selected])}>
+                <Icon name="trash" size="sm" />{deleting ? 'Deleting…' : `Delete ${selected.size}`}
+              </button>
+            </>
           )}
         </div>
+
+        {filtered.length === 0 ? (
+          <div className="empty">
+            <Icon name={meta.icon} size="lg" />
+            <h4>No {meta.label.toLowerCase()} yet</h4>
+            <p>{folder === 'instructionvideos'
+              ? 'The filename becomes the button label under Play Instructions.'
+              : 'Drag files here, or use Upload above.'}</p>
+          </div>
+        ) : viewMode === 'grid' ? (
+          <div className="fgrid">
+            {filtered.map(file => (
+              <button key={file.name} className={`fcard ${selected.has(file.name) ? 'on' : ''}`}
+                onClick={() => selected.size > 0 ? toggleSelect(file.name) : openSheet(file.name)}>
+                <div className="fcard-t">
+                  {isImg(file.name)
+                    ? <img src={file.url} alt="" loading="lazy" />
+                    : <Icon name={iconFor(file.name)} size="lg" />}
+                </div>
+                <div className="fcard-b">
+                  <div className="fcard-n">{folder === 'instructionvideos' ? baseName(file.name) : file.name}</div>
+                  <div className="fcard-s">{fmtSize(file.size)}</div>
+                </div>
+                {selected.has(file.name) && <span className="fcard-tick"><Icon name="check" size="sm" /></span>}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div>
+            {filtered.map(file => (
+              <button key={file.name} className={`frow ${selected.has(file.name) ? 'on' : ''}`}
+                onClick={() => selected.size > 0 ? toggleSelect(file.name) : openSheet(file.name)}>
+                <span className="thumb">
+                  {isImg(file.name)
+                    ? <img src={file.url} alt="" loading="lazy" />
+                    : <Icon name={iconFor(file.name)} size="sm" />}
+                </span>
+                <span className="fmeta">
+                  <span className="fnm">{folder === 'instructionvideos' ? baseName(file.name) : file.name}</span>
+                  <span className="fsub">{fmtSize(file.size)} · {fmtDate(file.modified)}</span>
+                </span>
+                <span className={`fcheck ${selected.has(file.name) ? 'on' : ''}`}
+                  onClick={e => { e.stopPropagation(); toggleSelect(file.name); }}>
+                  <Icon name="check" size="sm" />
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="slab">Quick upload</div>
+        <div className="group">
+          {Object.entries(FOLDERS).map(([k, { icon, label, accept }]) => (
+            <label key={k} className="srow" style={{ cursor: 'pointer' }}>
+              <Icon name={icon} size="sm" />
+              <div className="srow-l"><div className="srow-t">Add {label.toLowerCase()}</div></div>
+              <Icon name="upload" size="sm" />
+              <input key={`q-${k}-${inputKey}`} type="file" multiple accept={accept}
+                style={{ display: 'none' }} disabled={uploading}
+                onChange={e => { setFolder(k); doUpload(e.target.files, k); }} />
+            </label>
+          ))}
+        </div>
+        {folder === 'instructionvideos' && (
+          <p className="hint">The filename becomes the button label under Play Instructions.</p>
+        )}
       </div>
 
-      {toast&&<div className="toast" style={{background:toast.err?'var(--danger)':'var(--gray-900)'}}>{toast.msg}</div>}
+      {current && (
+        <>
+          <button className="scrim" onClick={() => { setOpenFile(null); setRenaming(false); }} aria-label="Close" />
+          <div className="sheet" role="dialog" aria-modal="true" aria-label={current.name}>
+            <div className="grab" />
+            <div className="sheet-hd">
+              <span className="thumb" style={{ width: 52, height: 40 }}>
+                {isImg(current.name)
+                  ? <img src={current.url} alt="" />
+                  : <Icon name={iconFor(current.name)} size="sm" />}
+              </span>
+              <span style={{ minWidth: 0 }}>
+                <span className="sheet-nm">{current.name}</span>
+                <span className="sheet-sub">
+                  {fmtSize(current.size)} · {extOf(current.name).replace('.', '').toUpperCase()} · {fmtDate(current.modified)}
+                </span>
+              </span>
+              <button className="sheet-x" onClick={() => { setOpenFile(null); setRenaming(false); }} aria-label="Close">
+                <Icon name="close" size="sm" />
+              </button>
+            </div>
+
+            {isImg(current.name) && (
+              <img src={current.url} alt="" style={{ width:'100%', aspectRatio:'16/10', objectFit:'contain', background:'#000', borderRadius:'var(--r-sm)', marginBottom:12 }} />
+            )}
+            {(isVid(current.name) || folder === 'instructionvideos') && (
+              <video src={current.url} controls style={{ width:'100%', aspectRatio:'16/9', background:'#000', borderRadius:'var(--r-sm)', marginBottom:12 }} />
+            )}
+            {isAud(current.name) && (
+              <audio src={current.url} controls style={{ width:'100%', marginBottom:12 }} />
+            )}
+            {folder === 'instructionvideos' && (
+              <div className="note"><b>Button label:</b> {baseName(current.name)}</div>
+            )}
+
+            {renaming ? (
+              <div style={{ marginBottom: 12 }}
+                onKeyDown={e => { if (e.key === 'Escape' && !renameBusy) setRenaming(false); }}>
+                <span className="flabel">Rename file</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <input className="input" autoFocus ref={renameInputRef} value={renameValue}
+                    disabled={renameBusy} aria-label={`New name for ${current.name}`}
+                    onChange={e => setRenameValue(e.target.value)}
+                    onFocus={e => e.target.select()}
+                    onKeyDown={e => { if (e.key === 'Enter') doRename(current.name); }} />
+                  <span className="srow-v">{extOf(current.name)}</span>
+                </div>
+                <p className="hint">Spaces become underscores. The extension stays the same.</p>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="b b-key" style={{ flex: 1 }} disabled={renameBusy}
+                    onClick={() => doRename(current.name)}>{renameBusy ? 'Saving…' : 'Save name'}</button>
+                  <button className="b b-ghost" style={{ flex: 1 }} disabled={renameBusy}
+                    onClick={() => setRenaming(false)}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <div className="acts">
+                <button className="act" onClick={() => setRenaming(true)}>
+                  <Icon name="pencil" size="sm" />Rename
+                </button>
+                <a className="act" href={current.url} download>
+                  <Icon name="down" size="sm" />Download
+                </a>
+                <button className="act act-danger" disabled={deleting}
+                  onClick={() => deleteNames([current.name])}>
+                  <Icon name="trash" size="sm" />Delete
+                </button>
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </>
   );
 }

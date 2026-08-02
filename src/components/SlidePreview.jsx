@@ -1,6 +1,8 @@
 // Shared component: renders a mini replica of the TV player layout
 // using actual image URLs from the current batch.
 
+import Icon from './Icon.jsx';
+
 const LAYOUT_CSS = {
   'single':   { cols:'1fr',              rows:'1fr',           spans:[] },
   'grid-2h':  { cols:'1fr 1fr',          rows:'1fr',           spans:[] },
@@ -34,9 +36,9 @@ export default function SlidePreview({ urls = [], layout = 'single', style = {} 
 
   if (padded.length === 0) {
     return (
-      <div style={{ width:'100%',height:'100%',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:8,color:'rgba(255,255,255,0.3)',background:'#111',...style }}>
-        <span style={{ fontSize:28 }}>🖼️</span>
-        <span style={{ fontSize:11 }}>No images</span>
+      <div style={{ width:'100%',height:'100%',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:8,color:'var(--tx-3)',background:'#000',...style }}>
+        <Icon name="image" size="lg" />
+        <span style={{ fontSize:12 }}>No images</span>
       </div>
     );
   }

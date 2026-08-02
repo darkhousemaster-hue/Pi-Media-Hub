@@ -42,7 +42,7 @@ export default function Slider({ min = 0, max = 100, step = 1, value, onChange, 
       style={{
         width,
         cursor: 'pointer',
-        accentColor: 'var(--primary)',
+        accentColor: 'var(--brand)',
         touchAction: 'none',
         display: 'block',
         height: 28,      // taller hit area on mobile

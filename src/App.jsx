@@ -2,13 +2,14 @@ import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from './api.js';
 import { io } from 'socket.io-client';
 import { AppContext } from './context.js';
-import Dashboard from './components/Dashboard.jsx';
+import Icon from './components/Icon.jsx';
+import Now from './components/Now.jsx';
 import MediaLibrary from './components/MediaLibrary.jsx';
 import SlideshowConfig from './components/SlideshowConfig.jsx';
-import NetworkStatus from './components/NetworkStatus.jsx';
+import SystemPanel from './components/SystemPanel.jsx';
 
 // Read version from package.json at build time
-const APP_VERSION = '1.0.16';
+const APP_VERSION = '2.0.0';
 
 const SOCKET_URL = import.meta.env.DEV ? 'http://localhost:3000' : '/';
 const TRANSPORTS = import.meta.env.DEV ? ['polling'] : ['websocket', 'polling'];
@@ -16,14 +17,26 @@ const socket = io(SOCKET_URL, { transports: TRANSPORTS });
 
 let toastTimer;
 
+const NAV = [
+  { id: 'now',    label: 'Now',    icon: 'tv' },
+  { id: 'media',  label: 'Media',  icon: 'image' },
+  { id: 'show',   label: 'Show',   icon: 'sliders' },
+  { id: 'system', label: 'System', icon: 'wifi' },
+];
+
+const TITLES = {
+  now:    { t: 'Lobby screen', s: 'Pi Media Hub' },
+  media:  { t: 'Media',        s: 'Pictures, video, music, clips' },
+  show:   { t: 'Show',         s: 'Layout, timing, volume' },
+  system: { t: 'System',       s: `v${APP_VERSION}` },
+};
+
 export default function App() {
-  const [page, setPage]         = useState('dashboard');
-  const [status, setStatus]     = useState({ status:'playing', mode:'slideshow', currentSlide:0, totalSlides:0 });
-  const [config, setConfig]     = useState(null);
+  const [page, setPage]           = useState('now');
+  const [status, setStatus]       = useState({ status:'playing', mode:'slideshow', currentSlide:0, totalSlides:0 });
+  const [config, setConfig]       = useState(null);
   const [connected, setConnected] = useState(false);
-  const [toast, setToast]       = useState(null);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [updating, setUpdating] = useState(false);
+  const [toast, setToast]         = useState(null);
 
   useEffect(() => {
     socket.on('connect',       () => setConnected(true));
@@ -39,15 +52,14 @@ export default function App() {
     apiFetch('/api/status').then(r => r.json()).then(setStatus).catch(() => {});
   }, []);
 
-  function toast_(msg) {
-    setToast(msg);
+  const toast_ = useCallback((msg, err = false) => {
+    setToast({ msg, err });
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => setToast(null), 3000);
-  }
+    toastTimer = setTimeout(() => setToast(null), 3200);
+  }, []);
 
   const sendCommand = useCallback((action, data = {}) => {
     socket.emit('command', { action, ...data });
-    toast_(`▶ ${action.replace(/-/g, ' ')}`);
   }, []);
 
   const saveConfig = useCallback(async (updates) => {
@@ -59,145 +71,73 @@ export default function App() {
       });
       const updated = await res.json();
       setConfig(updated);
-      toast_('Saved ✓');
+      toast_('Saved');
       return updated;
-    } catch { toast_('Failed to save'); }
-  }, []);
+    } catch { toast_('Could not save', true); return null; }
+  }, [toast_]);
 
-  async function handleReboot() {
-    if (!confirm('Reboot the Raspberry Pi?\nAll clients disconnect for ~60 seconds.')) return;
-    try {
-      await apiFetch('/api/system/reboot', { method: 'POST' });
-      toast_('Rebooting…');
-    } catch { toast_('Reboot command sent'); }
-  }
-
-  async function handleNetworkRestart() {
-    if (!confirm('Restart network service?')) return;
-    try {
-      await apiFetch('/api/system/restart-network', { method: 'POST' });
-      toast_('Restarting network…');
-    } catch { toast_('Network restart failed'); }
-  }
-
-  async function handleUpdate() {
-    if (!confirm('Pull latest version from GitHub and rebuild?\nThe app will restart automatically.')) return;
-    setUpdating(true);
-    toast_('⬆ Update started…');
-    // Remember which server instance we are talking to. git + npm + build take
-    // a couple of minutes on a Pi and the OLD server answers normally the whole
-    // time, so "the server responded" is not the signal we are waiting for —
-    // a changed bootTime is.
-    let bootBefore = null;
-    try { bootBefore = (await apiFetch('/api/system/info').then(r => r.json())).bootTime; } catch {}
-
-    try {
-      await apiFetch('/api/system/update', { method: 'POST' });
-    } catch {
-      toast_('Update failed — check Pi has git and internet access');
-      setUpdating(false);
-      return;
-    }
-
-    let attempts = 0, sawDown = false;
-    function retry() {
-      attempts++;
-      if (attempts < 100) setTimeout(poll, 3000); // ~5 minutes
-      else { setUpdating(false); toast_('Update timed out — see /tmp/pi-media-hub-update.log'); }
-    }
-    function poll() {
-      fetch('/api/system/info')
-        .then(r => r.json())
-        .then(info => {
-          const restarted = bootBefore === null ? sawDown : info.bootTime !== bootBefore;
-          if (restarted) { setUpdating(false); window.location.reload(); return; }
-          if (info.update?.state === 'failed') {
-            setUpdating(false);
-            toast_(`Update failed while ${info.update.step} — see /tmp/pi-media-hub-update.log`);
-            return;
-          }
-          retry();
-        })
-        .catch(() => { sawDown = true; retry(); });
-    }
-    setTimeout(poll, 3000);
-  }
-
-  const navItems = [
-    { id:'dashboard', label:'Dashboard', icon:'⊞' },
-    { id:'media',     label:'Media',     icon:'📁' },
-    { id:'slideshow', label:'Slideshow', icon:'▶'  },
-    { id:'network',   label:'Network',   icon:'📡' },
-  ];
-
-  function handleNav(id) { setPage(id); setMenuOpen(false); }
-
-  const ctx = { socket, status, config, connected, sendCommand, saveConfig };
+  const ctx = { socket, status, config, connected, sendCommand, saveConfig, toast_, version: APP_VERSION };
+  const head = TITLES[page];
 
   return (
     <AppContext.Provider value={ctx}>
       <div className="app">
-        <header className="header">
-          <div className="header-logo">
-            <div className="logo-icon">🖥️</div>
-            <span className="logo-text">Pi Media Hub</span>
+
+        <nav className="rail-nav">
+          <div className="rail-brand">
+            <div className="mark">AR</div>
+            <div>
+              <div className="abar-t" style={{ fontSize: 13.5 }}>Lobby screen</div>
+              <div className="abar-s">Pi Media Hub</div>
+            </div>
           </div>
-
-          <nav className="header-nav">
-            {navItems.map(item => (
-              <button key={item.id}
-                className={`nav-btn ${page === item.id ? 'active' : ''}`}
-                onClick={() => handleNav(item.id)}>
-                <span>{item.icon}</span>
-                <span className="nav-label">{item.label}</span>
-              </button>
-            ))}
-          </nav>
-
-          <div className="header-actions">
-            <button
-              className={`btn btn-sm header-sys-btn ${updating ? 'btn-slate' : 'btn-ghost'}`}
-              title="Update from GitHub"
-              onClick={handleUpdate}
-              disabled={updating}
-            >
-              {updating ? '⏳' : '⬆'} <span className="btn-label">{updating ? 'Updating…' : `Update`}</span>
-              <span style={{ fontSize:10, opacity:.6, marginLeft:4 }}>v{APP_VERSION}</span>
+          {NAV.map(item => (
+            <button key={item.id} className={`rnav ${page === item.id ? 'on' : ''}`}
+              aria-current={page === item.id ? 'page' : undefined}
+              onClick={() => setPage(item.id)}>
+              <Icon name={item.icon} />{item.label}
             </button>
-            <button className="btn btn-ghost btn-sm header-sys-btn"
-              title="Restart network" onClick={handleNetworkRestart}>
-              📡 <span className="btn-label">Network</span>
-            </button>
-            <button className="btn btn-danger btn-sm header-sys-btn"
-              title="Reboot Pi" onClick={handleReboot}>
-              ⏻ <span className="btn-label">Reboot</span>
-            </button>
-            <button className="mobile-menu-btn" onClick={() => setMenuOpen(m => !m)} aria-label="Menu">
-              {menuOpen ? '✕' : '☰'}
-            </button>
+          ))}
+          <div className="rail-foot">
+            <span className={`conn ${connected ? '' : 'off'}`} />
+            {connected ? 'ONLINE' : 'OFFLINE'} · v{APP_VERSION}
           </div>
-        </header>
+        </nav>
 
-        {menuOpen && (
-          <div className="mobile-nav">
-            {navItems.map(item => (
-              <button key={item.id}
-                className={`mobile-nav-item ${page === item.id ? 'active' : ''}`}
-                onClick={() => handleNav(item.id)}>
-                <span>{item.icon}</span> {item.label}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="col-wrap">
+          <header className="abar">
+            <div className="mark">AR</div>
+            <div style={{ minWidth: 0 }}>
+              <div className="abar-t">{head.t}</div>
+              <div className="abar-s">{head.s}</div>
+            </div>
+            <div className="abar-r">
+              <span className="conn-pill">
+                <span className={`conn ${connected ? '' : 'off'}`} />
+                {connected ? 'ONLINE' : 'OFFLINE'}
+              </span>
+            </div>
+          </header>
 
-        <main className="main-content">
-          {page === 'dashboard' && <Dashboard />}
-          {page === 'media'     && <MediaLibrary />}
-          {page === 'slideshow' && <SlideshowConfig />}
-          {page === 'network'   && <NetworkStatus />}
-        </main>
+          <main className="main">
+            {page === 'now'    && <Now />}
+            {page === 'media'  && <MediaLibrary />}
+            {page === 'show'   && <SlideshowConfig />}
+            {page === 'system' && <SystemPanel />}
+          </main>
+        </div>
 
-        {toast && <div className="toast">{toast}</div>}
+        <nav className="tabs">
+          {NAV.map(item => (
+            <button key={item.id} className={`tab ${page === item.id ? 'on' : ''}`}
+              aria-current={page === item.id ? 'page' : undefined}
+              onClick={() => setPage(item.id)}>
+              <Icon name={item.icon} />{item.label}
+            </button>
+          ))}
+        </nav>
+
+        {toast && <div className={`toast ${toast.err ? 'err' : ''}`}>{toast.msg}</div>}
       </div>
     </AppContext.Provider>
   );
