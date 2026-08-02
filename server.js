@@ -352,6 +352,7 @@ app.post('/api/system/update', (req, res) => {
   const script = `#!/bin/bash
 LOG=/tmp/pi-media-hub-update.log
 STATUS="${STATUS_FILE}"
+CONFIG_BAK=/tmp/pi-media-hub-config.bak
 exec >> $LOG 2>&1
 
 mark(){ printf '{"state":"%s","step":"%s","at":%s}' "$1" "$2" "$(date +%s)000" > "$STATUS"; }
@@ -362,9 +363,16 @@ cd "${__dirname}" || die "open install directory"
 
 # Mirror origin instead of merging. npm rewrites package-lock.json, which is
 # tracked, and a plain "git pull" then aborts on the dirty working tree.
+#
+# config.json belongs to this Pi, never to the repo. It was tracked for a
+# while, so the reset below restored the committed snapshot straight over the
+# live slideshow settings; the commit that untracks it deletes the file
+# outright. Carry it across by hand either way.
 mark running "downloading"
+if [ -f config.json ]; then cp -f config.json "$CONFIG_BAK"; fi
 git fetch origin main || die "git fetch (network or credentials)"
 git reset --hard origin/main || die "git reset"
+if [ -f "$CONFIG_BAK" ]; then cp -f "$CONFIG_BAK" config.json; fi
 
 # Belt and braces. Everything the build needs now lives in "dependencies", so
 # this works without the flag, but systemd sets NODE_ENV=production and npm
