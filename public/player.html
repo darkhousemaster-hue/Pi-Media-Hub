@@ -110,6 +110,15 @@ let isPaused=false, isVideoActive=false, isInstruction=false;
 let slideshowTimer=null, videoScheduleTimer=null;
 let musicStarted=false;
 
+// Playback safety net. A stalled <video> fires neither "ended" nor "error",
+// so without this the element sits frozen with isVideoActive stuck true, which
+// freezes the slideshow too because advance() bails while a video is "active".
+// That is the "video sticks mid-play and the slideshow stops" case.
+const VIDEO_STALL_MS = 15000;          // no progress for this long => dead
+const VIDEO_MAX_MS   = 20 * 60 * 1000; // absolute backstop
+let videoWatchdog=null, lastVideoTime=-1, lastVideoProgress=0, videoStartedAt=0;
+let pendingMediaReload=false, audioFails=0;
+
 // ── DOM ────────────────────────────────────────────────────────────────────
 const stage         = document.getElementById('stage');
 const videoOverlay  = document.getElementById('video-overlay');
@@ -167,8 +176,12 @@ function advance(){
 // ── Slideshow ──────────────────────────────────────────────────────────────
 function startSlideshow(){
   clearInterval(slideshowTimer); slideshowTimer=null;
-  if(!slides.length||config.slideshow?.autoAdvance===false) return;
-  slideshowTimer=setInterval(advance,(config.slideshow?.defaultDuration||5)*1000);
+  if(!slides.length) return;
+  // Interval videos are independent of slide auto-advance. The old early
+  // return meant turning auto-advance off also silently killed them.
+  if(config.slideshow?.autoAdvance!==false){
+    slideshowTimer=setInterval(advance,(config.slideshow?.defaultDuration||5)*1000);
+  }
   scheduleVideo();
 }
 function stopSlideshow(){ clearInterval(slideshowTimer); slideshowTimer=null; }
@@ -210,10 +223,15 @@ function playVideo(url,instr){
   // Apply volume once the browser has the stream ready — more reliable than setting before load
   videoEl.oncanplay = () => { applyVideo(instr); videoEl.muted=false; };
   applyVideo(instr);         // also set immediately as a first attempt
-  videoEl.play().catch(()=>{});
+  videoEl.play().catch(err=>{
+    // A rejected play() fires no "error" event, so nothing else would ever
+    // end this video and the slideshow would never come back.
+    console.warn('[player] play() rejected:', err && err.name);
+  });
   socket.emit('state-update',{mode:'video',status:'playing'});
   videoEl.onended = handleVideoEnd;
   videoEl.onerror = handleVideoEnd;
+  startVideoWatchdog();
 }
 
 let _videoEndHandled = false;
@@ -221,6 +239,7 @@ function handleVideoEnd(){
   // Guard: only handle once per video play
   if(_videoEndHandled) return;
   _videoEndHandled = true;
+  stopVideoWatchdog();
   videoEl.onended = null;
   videoEl.onerror = null;
   videoEl.oncanplay = null;
@@ -237,6 +256,8 @@ function handleVideoEnd(){
     slideshowTimer=setInterval(advance,(config.slideshow?.defaultDuration||5)*1000);
     scheduleVideo();
     socket.emit('state-update',{mode:'slideshow',status:'playing'});
+    // A library change that arrived mid-video was dropped entirely; apply it.
+    if(pendingMediaReload){ pendingMediaReload=false; loadMedia(); }
   }
 }
 
@@ -244,16 +265,61 @@ function onVideoEnded(){ handleVideoEnd(); } // kept for compatibility
 
 function stopVideoNow(){
   if(!isVideoActive) return;
+  stopVideoWatchdog();
   videoEl.pause(); videoEl.src='';
   videoOverlay.classList.remove('visible');
   isVideoActive=false; isInstruction=false;
   clearTimeout(videoScheduleTimer);
 }
 
+// ── Playback safety net ────────────────────────────────────────────────────
+function stopVideoWatchdog(){ clearInterval(videoWatchdog); videoWatchdog=null; }
+
+function failVideo(reason){
+  console.warn('[player] recovering from a stuck video:', reason);
+  handleVideoEnd();          // hands control back to the slideshow
+}
+
+// While a video plays, confirm it is actually making progress. currentTime is
+// the only reliable signal: a buffering or half-dead element stays "playing"
+// forever without firing anything.
+function startVideoWatchdog(){
+  stopVideoWatchdog();
+  lastVideoTime=-1; lastVideoProgress=Date.now(); videoStartedAt=Date.now();
+  videoWatchdog=setInterval(()=>{
+    if(!isVideoActive){ stopVideoWatchdog(); return; }
+    if(isPaused){ lastVideoProgress=Date.now(); return; }   // paused on purpose
+    if(videoEl.error){ failVideo('media error'); return; }
+    if(videoEl.ended){ failVideo('ended without firing the event'); return; }
+    if(Date.now()-videoStartedAt > VIDEO_MAX_MS){ failVideo('ran past the maximum'); return; }
+    const t=videoEl.currentTime;
+    if(t > lastVideoTime + 0.25){ lastVideoTime=t; lastVideoProgress=Date.now(); return; }
+    const stuck=Date.now()-lastVideoProgress;
+    if(stuck > VIDEO_STALL_MS) failVideo('no progress for '+Math.round(stuck/1000)+'s');
+  },2000);
+}
+
+// Runs for the life of the page. None of this should ever be needed; it is
+// here so one missed event cannot leave the TV frozen until someone walks over
+// and reboots the Pi.
+function supervise(){
+  if(isPaused) return;
+  if(isVideoActive){
+    if(!videoWatchdog) startVideoWatchdog();   // watchdog lost, re-arm it
+    return;
+  }
+  if(slides.length && config.slideshow?.autoAdvance!==false && !slideshowTimer){
+    console.warn('[player] slideshow timer had gone missing, restarting it');
+    startSlideshow();
+  }
+  if(config.video?.enabled && videos.length && !videoScheduleTimer) scheduleVideo();
+}
+setInterval(supervise,5000);
+
 // ── Music ──────────────────────────────────────────────────────────────────
 function startMusic(){
   if(!music.length||( musicStarted&&!audioEl.ended&&!audioEl.paused)) return;
-  musicStarted=true; currentMusic=0;
+  musicStarted=true; currentMusic=0; audioFails=0;
   audioEl.src=music[0]; applyAudio();
   audioEl.play().catch(()=>{
     // Store for retry on first interaction (dev browser policy)
@@ -264,6 +330,17 @@ function startMusic(){
     audioEl.src=music[currentMusic]; applyAudio();
     audioEl.play().catch(()=>{});
   };
+  // A renamed or deleted track leaves the element on a dead URL and the music
+  // never comes back. Skip on, but give up rather than spin.
+  audioEl.onerror=()=>{
+    if(!music.length||isPaused) return;
+    if(++audioFails > music.length+2){ console.warn('[player] giving up on music for now'); return; }
+    console.warn('[player] audio failed, skipping to the next track');
+    currentMusic=(currentMusic+1)%music.length;
+    audioEl.src=music[currentMusic]; applyAudio();
+    audioEl.play().catch(()=>{});
+  };
+  audioEl.onplaying=()=>{ audioFails=0; };
 }
 
 // ── Config ─────────────────────────────────────────────────────────────────
@@ -337,7 +414,9 @@ const socket=io(window.SERVER,{transports:['websocket','polling']});
 socket.on('config',        cfg=>{ config=cfg; applyConfig(); });
 socket.on('config-update', cfg=>{ config=cfg; applyConfig(); if(slides.length&&!isVideoActive&&!isPaused) startSlideshow(); });
 socket.on('command',       handleCommand);
-socket.on('media-updated', () => { if (!isVideoActive) loadMedia(); });
+socket.on('media-updated', () => {
+  if (isVideoActive) pendingMediaReload = true; else loadMedia();
+});
 
 // Auto-reload when the server restarts (so deploys actually reach the kiosk
 // without a manual reboot). Server emits its boot timestamp on every connect;

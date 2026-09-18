@@ -9,7 +9,7 @@ import SlideshowConfig from './components/SlideshowConfig.jsx';
 import SystemPanel from './components/SystemPanel.jsx';
 
 // Read version from package.json at build time
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.0.1';
 
 const SOCKET_URL = import.meta.env.DEV ? 'http://localhost:3000' : '/';
 const TRANSPORTS = import.meta.env.DEV ? ['polling'] : ['websocket', 'polling'];
