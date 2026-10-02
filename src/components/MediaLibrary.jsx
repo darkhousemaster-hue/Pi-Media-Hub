@@ -259,7 +259,7 @@ export default function MediaLibrary() {
               <span>
                 {progress.files > 1 && `${progress.filesDone} of ${progress.files} files · `}
                 {fmtSize(progress.sent)} of {fmtSize(progress.total)}
-                {upEta && ` · ${upEta}`}
+                {progress.note ? ` · ${progress.note}` : upEta && ` · ${upEta}`}
               </span>
               <span>Keep this page open</span>
             </div>

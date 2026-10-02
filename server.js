@@ -130,6 +130,14 @@ if (process.env.NODE_ENV === 'production' && fs.existsSync(distPath)) {
 
 // ─── File helpers ─────────────────────────────────────────────────────────────
 const VALID_TYPES = ['pictures', 'videos', 'music', 'instructionvideos'];
+// Which extensions each folder accepts. The client mirrors this list.
+const TYPE_RULES = {
+  pictures:          /\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i,
+  videos:            /\.(mp4|webm|ogg|mov|avi|mkv|m4v)$/i,
+  music:             /\.(mp3|wav|ogg|flac|aac|m4a|opus)$/i,
+  instructionvideos: /\.(mp4|webm|ogg|mov|avi|mkv|m4v)$/i,
+};
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 
 // One naming rule for both uploads and renames, so a renamed file keeps exactly
 // the character set an uploaded one would have. Leading dots are stripped —
@@ -220,17 +228,11 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2 GB max
+  limits: { fileSize: MAX_UPLOAD_BYTES },
   fileFilter: (req, file, cb) => {
     file.originalname = decodeUploadName(file.originalname);
     const type = req.params.type;
-    const allowed = {
-      pictures:          /\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i,
-      videos:            /\.(mp4|webm|ogg|mov|avi|mkv|m4v)$/i,
-      music:             /\.(mp3|wav|ogg|flac|aac|m4a|opus)$/i,
-      instructionvideos: /\.(mp4|webm|ogg|mov|avi|mkv|m4v)$/i,
-    };
-    const re = allowed[type];
+    const re = TYPE_RULES[type];
     if (!re) return cb(new Error('Unknown upload type: ' + type));
     if (re.test(file.originalname)) {
       cb(null, true);
@@ -275,7 +277,7 @@ app.post('/api/files/:type', (req, res) => {
       // now and closing a socket that still has unread data sends a TCP reset,
       // so the browser threw this very message away and reported "lost the
       // connection" instead. Read the rest first, then answer.
-      const send = () => { if (!res.headersSent && !req.destroyed) res.status(400).json({ error: err.message }); };
+      const send = () => { if (!res.headersSent && !res.destroyed) res.status(400).json({ error: err.message }); };
       if (req.readableEnded) send(); else { req.once('end', send); req.resume(); }
       return;
     }
@@ -341,6 +343,151 @@ app.patch('/api/files/:type/:filename', (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ─── Resumable uploads ────────────────────────────────────────────────────────
+// One multipart POST per file had to survive minutes of venue Wi-Fi, the Pi's
+// own Wi-Fi radio, a phone that locks, and through the tunnel, Cloudflare's
+// 100 MB cap per request. It died at about 1.5 MB, which is just the phone's
+// send buffer: the Pi had received almost nothing. Files now travel as small
+// chunks, and the client resumes from the byte the Pi confirms after any
+// hiccup. The multipart route above stays for scripts and older clients.
+const CHUNK_MAX_BYTES = 16 * 1024 * 1024;
+const CHUNK_IDLE_MS = 30 * 1000;
+const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
+const uploadSessions = new Map();
+const sizeOnDisk = p => { try { return fs.statSync(p).size; } catch { return -1; } };
+
+app.post('/api/uploads', (req, res) => {
+  const { type, name, size } = req.body || {};
+  const re = TYPE_RULES[type];
+  if (!re) return res.status(400).json({ error: 'Unknown folder: ' + type });
+  const original = String(name || '');
+  if (!re.test(original)) return res.status(400).json({ error: `File type not allowed for ${type}: ${original}` });
+  const total = Number(size);
+  if (!Number.isSafeInteger(total) || total < 0) return res.status(400).json({ error: 'Missing file size' });
+  if (total > MAX_UPLOAD_BYTES) return res.status(413).json({ error: `${original} is over the 2 GB limit.` });
+
+  const finalName = finalUploadName(original);
+  const dir = path.join(UPLOAD_DIR, type);
+  const id = randomUUID();
+  const temp = path.join(dir, '.upload-' + id + path.extname(finalName));
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(temp, '');
+  } catch (e) {
+    return res.status(500).json({ error: 'The Pi could not create the file: ' + e.message });
+  }
+  uploadSessions.set(id, { id, type, original, finalName, temp, size: total, busy: null, touched: Date.now() });
+  res.json({ id, offset: 0 });
+});
+
+// Where the Pi has got to. The client asks after any failure and resumes
+// from exactly this byte, so nothing is sent twice and nothing is skipped.
+app.get('/api/uploads/:id', (req, res) => {
+  const s = uploadSessions.get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'Upload not found' });
+  res.json({ offset: sizeOnDisk(s.temp), size: s.size, busy: !!s.busy });
+});
+
+app.put('/api/uploads/:id', (req, res) => {
+  const s = uploadSessions.get(req.params.id);
+  // Can this request still be answered? Ask the response, never req.destroyed:
+  // Node destroys a request stream as soon as its body has been read, so
+  // req.destroyed is true on every successful chunk too.
+  const reply = (code, body) => { if (!res.headersSent && !res.destroyed) res.status(code).json(body); };
+  // Read whatever the client sends before answering early. Closing a socket
+  // with unread data resets it, and the browser then never sees the answer.
+  const refuse = (code, body) => {
+    if (req.readableEnded) reply(code, body); else { req.once('end', () => reply(code, body)); req.resume(); }
+  };
+  if (!s) return refuse(404, { error: 'Upload not found' });
+
+  // The client only sends one chunk at a time, so a chunk still "in flight"
+  // here belongs to a connection that already died. Kill it, then let the
+  // client ask for the offset again once its write has settled.
+  if (s.busy) { s.busy.destroy(); return refuse(409, { error: 'Previous chunk still settling', offset: sizeOnDisk(s.temp), retry: true }); }
+
+  const offset = Number(req.query.offset);
+  const length = Number(req.query.length);
+  const have = sizeOnDisk(s.temp);
+  if (offset !== have) return refuse(409, { error: 'Offset mismatch', offset: have });
+  if (!Number.isSafeInteger(length) || length <= 0) return refuse(400, { error: 'Missing chunk length' });
+  if (length > CHUNK_MAX_BYTES) return refuse(413, { error: 'Chunk too large', maxChunk: CHUNK_MAX_BYTES });
+  if (offset + length > s.size) return refuse(400, { error: 'Chunk runs past the end of the file' });
+
+  s.busy = req;
+  s.touched = Date.now();
+  req.setTimeout(CHUNK_IDLE_MS, () => req.destroy(new Error('chunk stalled')));
+  let writeError = null;
+  const ws = fs.createWriteStream(s.temp, { flags: 'a' });
+
+  // The client vanished mid-chunk, or a newer attempt replaced this one:
+  // close the file so that attempt is not blocked behind it.
+  req.on('close', () => { if (!req.complete) ws.destroy(); });
+
+  // A disk problem must not look like a network one. Stop writing, read the
+  // rest of the chunk, then give the real reason.
+  ws.on('error', e => {
+    writeError = e;
+    req.unpipe(ws);
+    refuse(500, { error: 'The Pi could not save the file: ' + e.message, offset: sizeOnDisk(s.temp), fatal: true });
+  });
+
+  // Judge success by what actually reached the disk, once the file is closed.
+  ws.on('close', () => {
+    s.busy = null;
+    s.touched = Date.now();
+    if (writeError) return;                  // answered by the error path
+    const now = sizeOnDisk(s.temp);
+    if (!req.complete) {                     // client hung up; the next request learns the offset
+      if (now !== offset + length) console.warn(`[upload] ${s.finalName}: chunk at ${offset} cut short, Pi has ${now} of ${s.size}`);
+      return;
+    }
+    if (now !== offset + length) return reply(400, { error: 'The chunk was cut short', offset: now });
+    reply(200, { offset: now });
+  });
+  req.pipe(ws);
+});
+
+app.post('/api/uploads/:id/complete', (req, res) => {
+  const s = uploadSessions.get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'Upload not found' });
+  if (s.busy) return res.status(409).json({ error: 'Still writing', retry: true });
+  const have = sizeOnDisk(s.temp);
+  if (have !== s.size) return res.status(409).json({ error: 'The upload is not complete yet', offset: have });
+  try {
+    // Atomic on one filesystem: a clip with the same name stays playable
+    // right up to this instant, then is replaced whole.
+    fs.renameSync(s.temp, path.join(path.dirname(s.temp), s.finalName));
+  } catch (e) {
+    return res.status(500).json({ error: 'Could not save the upload: ' + e.message });
+  }
+  uploadSessions.delete(s.id);
+  io.emit('media-updated', { type: s.type });
+  res.json({ success: true, name: s.original, savedAs: s.finalName, size: s.size });
+});
+
+app.delete('/api/uploads/:id', (req, res) => {
+  const s = uploadSessions.get(req.params.id);
+  if (s) {
+    uploadSessions.delete(s.id);
+    if (s.busy) s.busy.destroy();
+    fs.rm(s.temp, { force: true }, () => {});
+  }
+  res.json({ success: true });
+});
+
+// An upload nobody touched for two hours was abandoned (tab closed, phone
+// left the venue). Its temp file would otherwise sit there until a reboot.
+setInterval(() => {
+  const cutoff = Date.now() - SESSION_TTL_MS;
+  for (const s of uploadSessions.values()) {
+    if (!s.busy && s.touched < cutoff) {
+      uploadSessions.delete(s.id);
+      fs.rm(s.temp, { force: true }, () => {});
+    }
+  }
+}, 10 * 60 * 1000).unref();
 
 app.delete('/api/files/:type/:filename', (req, res) => {
   const target = resolveUploadPath(req.params.type, req.params.filename);
@@ -566,6 +713,16 @@ process.on('uncaughtException', err => {
 });
 process.on('unhandledRejection', (reason) => {
   console.error('[UNHANDLED REJECTION]', reason);
+});
+
+// The uncaughtException handler below would swallow a failed bind and leave
+// a zombie that serves nothing while systemd believes the hub is up. Exit so
+// systemd retries once the port is free.
+server.on('error', err => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} is already in use. Exiting so systemd can retry.`);
+    process.exit(1);
+  }
 });
 
 server.listen(PORT, '0.0.0.0', () => {

@@ -152,14 +152,21 @@ After reboot, connect to **PiMediaHub** WiFi, then open `http://192.168.4.1:3000
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/files/:type` | List files (type: pictures/videos/music) |
-| POST | `/api/files/:type` | Upload files (multipart/form-data) |
+| GET | `/api/files/:type` | List files (type: pictures/videos/music/instructionvideos) |
+| POST | `/api/uploads` | Start a resumable upload. Body: `{ type, name, size }`. Returns `{ id }` |
+| PUT | `/api/uploads/:id?offset=&length=` | Append one chunk of raw bytes at `offset` |
+| GET | `/api/uploads/:id` | How many bytes the Pi has: resume from `offset` |
+| POST | `/api/uploads/:id/complete` | Move the finished file into place |
+| DELETE | `/api/uploads/:id` | Abandon an upload and delete its partial file |
+| POST | `/api/files/:type` | Upload files in one request (multipart/form-data). Kept for scripts; the app uses the resumable endpoints above |
+| PATCH | `/api/files/:type/:filename` | Rename a file. Body: `{ name }`. The extension is kept |
 | DELETE | `/api/files/:type/:filename` | Delete a file |
 | GET | `/api/config` | Get slideshow config |
 | PUT | `/api/config` | Save slideshow config |
 | GET | `/api/status` | Get current playback status |
 | GET | `/api/storage` | Get storage usage stats |
 | GET | `/api/network` | Get network info |
+| GET | `/api/system/info` | Version, boot time and the state of the last update |
 | POST | `/api/system/reboot` | Reboot the Pi |
 | POST | `/api/system/restart-network` | Restart networking |
 
