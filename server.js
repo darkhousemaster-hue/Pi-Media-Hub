@@ -7,12 +7,20 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import cors from 'cors';
 import { execSync, spawn } from 'child_process';
+import { randomUUID } from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = createServer(app);
+// Node caps the time to receive a whole request at 5 minutes by default. A
+// clip over venue Wi-Fi routinely needs longer, and the upload was cut off
+// mid-file while the browser kept saying "Uploading…" for 5 more minutes.
+// Two hours covers the 2 GB limit on a weak signal. Uploads that genuinely
+// stall are still caught by the idle timeout on the upload route itself.
+server.requestTimeout = 2 * 60 * 60 * 1000;
+const UPLOAD_IDLE_MS = 90 * 1000;
 const io = new Server(server, {
   cors: {
     origin: ['http://localhost:5173', 'http://127.0.0.1:5173', '*'],
@@ -30,6 +38,11 @@ const SERVER_BOOT_TIME = Date.now();
 
 ['pictures', 'videos', 'music', 'instructionvideos'].forEach(dir => {
   fs.mkdirSync(path.join(UPLOAD_DIR, dir), { recursive: true });
+  // Temp files only exist while an upload is in flight, so any found at boot
+  // are leftovers from a crash or a power cut mid-upload.
+  for (const f of fs.readdirSync(path.join(UPLOAD_DIR, dir))) {
+    if (f.startsWith('.upload-')) fs.rmSync(path.join(UPLOAD_DIR, dir, f), { force: true });
+  }
 });
 
 // ─── Default Config ──────────────────────────────────────────────────────────
@@ -122,8 +135,42 @@ const VALID_TYPES = ['pictures', 'videos', 'music', 'instructionvideos'];
 // the character set an uploaded one would have. Leading dots are stripped —
 // the file listing hides dotfiles, so a name like ".intro" would make the file
 // invisible in the library.
+//
+// Letters and digits from any script are kept. The ASCII-only rule turned
+// "Gutscheine für Firmen" into "Gutscheine fr Firmen", and a clip's filename
+// IS its Play Instructions button label. NFC first, because macOS and iOS send
+// "ü" as "u" plus a combining mark, which is not itself a letter.
 function sanitizeBase(name) {
-  return name.replace(/[^a-zA-Z0-9._\- ]/g, '').trim().replace(/\s+/g, '_').replace(/^\.+/, '');
+  return String(name).normalize('NFC')
+    .replace(/[^\p{L}\p{N}._\- ]/gu, '').trim().replace(/\s+/g, '_').replace(/^\.+/, '');
+}
+
+// busboy (under multer 1.x) decodes the multipart filename as latin1, but
+// every browser sends UTF-8, so "für" arrived as "fÃ¼r". Undo that, unless the
+// bytes really were latin1, which shows up as replacement characters.
+function decodeUploadName(raw) {
+  const utf8 = Buffer.from(raw, 'latin1').toString('utf8');
+  return utf8.includes('\uFFFD') ? raw : utf8;
+}
+
+// A name with nothing usable left ("😀.mp4") used to be saved as ".mp4": a
+// hidden file, never listed, overwritten by the next one. Fall back instead.
+function finalUploadName(original) {
+  const ext = path.extname(original);
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  return (sanitizeBase(path.basename(original, ext)) || 'upload-' + stamp) + ext;
+}
+
+// Whatever ends an upload early, no half-written temp file may survive it.
+function discardTemps(req) {
+  const list = req.tempUploads || [];
+  req.tempUploads = [];
+  for (const p of list) {
+    fs.unlink(p, err => {
+      // Windows refuses to unlink a file whose write stream is still open.
+      if (err && err.code !== 'ENOENT') setTimeout(() => fs.unlink(p, () => {}), 2000);
+    });
+  }
 }
 
 // True only when two paths are the *same* file on disk — which is what a
@@ -160,9 +207,14 @@ const storage = multer.diskStorage({
     cb(null, dir);
   },
   filename: (req, file, cb) => {
-    // Preserve spaces as underscores but keep extension intact
-    const ext = path.extname(file.originalname);
-    cb(null, sanitizeBase(path.basename(file.originalname, ext)) + ext);
+    // Write to a hidden temp name and only move it into place once the whole
+    // request has arrived. Writing straight to the final name meant a cut-off
+    // upload left a truncated clip in the list, and re-uploading an existing
+    // clip destroyed the original the moment the new upload began.
+    file.finalName = finalUploadName(file.originalname);
+    const temp = '.upload-' + randomUUID() + path.extname(file.finalName);
+    (req.tempUploads ||= []).push(path.join(UPLOAD_DIR, req.params.type, temp));
+    cb(null, temp);
   }
 });
 
@@ -170,6 +222,7 @@ const upload = multer({
   storage,
   limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2 GB max
   fileFilter: (req, file, cb) => {
+    file.originalname = decodeUploadName(file.originalname);
     const type = req.params.type;
     const allowed = {
       pictures:          /\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i,
@@ -205,12 +258,41 @@ app.get('/api/files/:type', (req, res) => {
 });
 
 app.post('/api/files/:type', (req, res) => {
+  // An upload that stops sending is dead; one that is merely slow is not.
+  // This idle timer resets on every chunk, unlike server.requestTimeout.
+  req.setTimeout(UPLOAD_IDLE_MS, () => req.destroy(new Error('upload stalled')));
+
+  // When the client vanishes or the request is destroyed, multer never calls
+  // back, so this is the one hook that reliably fires.
+  let committed = false;
+  res.on('close', () => { if (!committed) discardTemps(req); });
+
   upload.array('files', 100)(req, res, (err) => {
     if (err) {
       console.error('Upload error:', err.message);
-      return res.status(400).json({ error: err.message });
+      discardTemps(req);
+      // Multer stops reading the body the moment it rejects a file. Answering
+      // now and closing a socket that still has unread data sends a TCP reset,
+      // so the browser threw this very message away and reported "lost the
+      // connection" instead. Read the rest first, then answer.
+      const send = () => { if (!res.headersSent && !req.destroyed) res.status(400).json({ error: err.message }); };
+      if (req.readableEnded) send(); else { req.once('end', send); req.resume(); }
+      return;
     }
     if (!req.files?.length) return res.status(400).json({ error: 'No files received' });
+    try {
+      for (const f of req.files) {
+        // Atomic on one filesystem: an existing clip of the same name stays
+        // playable right up to this instant, then is replaced whole.
+        fs.renameSync(f.path, path.join(path.dirname(f.path), f.finalName));
+        f.filename = f.finalName;
+      }
+      committed = true;
+    } catch (e) {
+      console.error('Upload commit failed:', e.message);
+      discardTemps(req);
+      return res.status(500).json({ error: 'Could not save the upload: ' + e.message });
+    }
     const uploaded = req.files.map(f => ({ name: f.originalname, savedAs: f.filename, size: f.size }));
     io.emit('media-updated', { type: req.params.type });
     res.json({ success: true, files: uploaded });

@@ -430,6 +430,11 @@ input[type=range] { accent-color: var(--brand); }
 
 .drop { outline: 2px dashed var(--brand); outline-offset: -6px; border-radius: var(--r); }
 
+.upbar { padding: 2px 2px 12px; }
+.upbar-t { display: flex; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap;
+  margin-top: 7px; font-family: var(--mono); font-size: 11px; color: var(--tx-3);
+  font-variant-numeric: tabular-nums; }
+
 .empty { display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 10px; padding: 44px 20px; text-align: center; color: var(--tx-3); }
 .empty h4 { font-size: 14px; font-weight: 600; color: var(--tx-2); }

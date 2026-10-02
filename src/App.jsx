@@ -9,7 +9,7 @@ import SlideshowConfig from './components/SlideshowConfig.jsx';
 import SystemPanel from './components/SystemPanel.jsx';
 
 // Read version from package.json at build time
-const APP_VERSION = '2.0.1';
+const APP_VERSION = '2.0.2';
 
 const SOCKET_URL = import.meta.env.DEV ? 'http://localhost:3000' : '/';
 const TRANSPORTS = import.meta.env.DEV ? ['polling'] : ['websocket', 'polling'];
@@ -55,7 +55,8 @@ export default function App() {
   const toast_ = useCallback((msg, err = false) => {
     setToast({ msg, err });
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => setToast(null), 3200);
+    // Errors carry instructions ("check the Wi-Fi and try again"), so they stay longer.
+    toastTimer = setTimeout(() => setToast(null), err ? 6500 : 3200);
   }, []);
 
   const sendCommand = useCallback((action, data = {}) => {

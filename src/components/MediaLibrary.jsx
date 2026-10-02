@@ -3,12 +3,20 @@ import { apiFetch, uploadFiles } from '../api.js';
 import { useApp } from '../context.js';
 import Icon from './Icon.jsx';
 
+// `types` mirrors the server's fileFilter in server.js. Checking here means a
+// wrong file is refused instantly, instead of after minutes of uploading it.
+const VIDEO_TYPES = /\.(mp4|webm|ogg|mov|avi|mkv|m4v)$/i;
 const FOLDERS = {
-  pictures:          { icon: 'image', label: 'Pictures', short: 'Pictures', accept: 'image/*' },
-  videos:            { icon: 'film',  label: 'Videos',   short: 'Videos',   accept: 'video/*' },
-  music:             { icon: 'music', label: 'Music',    short: 'Music',    accept: 'audio/*' },
-  instructionvideos: { icon: 'cue',   label: 'Instruction Videos', short: 'Clips', accept: 'video/*' },
+  pictures:          { icon: 'image', label: 'Pictures', short: 'Pictures', accept: 'image/*',
+                       types: /\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i, typeList: 'JPG, PNG, GIF, WebP, BMP or SVG' },
+  videos:            { icon: 'film',  label: 'Videos',   short: 'Videos',   accept: 'video/*',
+                       types: VIDEO_TYPES, typeList: 'MP4, MOV, WebM, M4V, MKV, AVI or OGG' },
+  music:             { icon: 'music', label: 'Music',    short: 'Music',    accept: 'audio/*',
+                       types: /\.(mp3|wav|ogg|flac|aac|m4a|opus)$/i, typeList: 'MP3, WAV, M4A, AAC, FLAC, OGG or Opus' },
+  instructionvideos: { icon: 'cue',   label: 'Instruction Videos', short: 'Clips', accept: 'video/*',
+                       types: VIDEO_TYPES, typeList: 'MP4, MOV, WebM, M4V, MKV, AVI or OGG' },
 };
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;   // multer's limit in server.js
 
 const fmtSize = b => !b ? '0 B' : b < 1e6 ? (b/1024).toFixed(1)+' KB' : b < 1e9 ? (b/1e6).toFixed(1)+' MB' : (b/1e9).toFixed(2)+' GB';
 const fmtDate = d => new Date(d).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' });
@@ -21,7 +29,7 @@ const isAud = n => /\.(mp3|wav|ogg|flac|aac|m4a|opus)$/i.test(n);
 const iconFor = n => isImg(n) ? 'image' : isVid(n) ? 'film' : isAud(n) ? 'music' : 'image';
 
 export default function MediaLibrary() {
-  const { toast_ } = useApp();
+  const { toast_, socket } = useApp();
   const [folder, setFolder]     = useState('pictures');
   const [files, setFiles]       = useState([]);
   const [counts, setCounts]     = useState({});
@@ -29,7 +37,7 @@ export default function MediaLibrary() {
   const [search, setSearch]     = useState('');
   const [viewMode, setViewMode] = useState('list');
   const [uploading, setUploading] = useState(false);
-  const [uploadMsg, setUploadMsg] = useState('');
+  const [progress, setProgress] = useState(null);   // { sent, total, files, filesDone, startedAt }
   const [dragOver, setDragOver] = useState(false);
   const [inputKey, setInputKey] = useState(0);
   const [deleting, setDeleting] = useState(false);
@@ -58,19 +66,58 @@ export default function MediaLibrary() {
     setSelected(new Set()); setOpenFile(null); setRenaming(false);
   }, [folder, loadFiles, loadCounts]);
 
+  // The folder on screen right now. Async work must read this, not `folder`:
+  // a quick upload switches folders, and its closure still held the old one,
+  // so a successful upload never showed up in the list.
+  const folderRef = useRef(folder);
+  useEffect(() => { folderRef.current = folder; }, [folder]);
+
+  // Uploads, renames and deletes from any device broadcast this. Without it
+  // the list only changed when this very screen made the change.
+  useEffect(() => {
+    if (!socket) return;
+    const onUpdate = ({ type } = {}) => {
+      loadCounts();
+      if (!type || type === folderRef.current) loadFiles(folderRef.current);
+    };
+    socket.on('media-updated', onUpdate);
+    return () => socket.off('media-updated', onUpdate);
+  }, [socket, loadFiles, loadCounts]);
+
+  // Leaving or reloading the page kills an upload mid-file.
+  useEffect(() => {
+    if (!uploading) return;
+    const warn = e => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [uploading]);
+
   async function doUpload(fileList, targetFolder) {
     if (!fileList?.length) return;
     const f = targetFolder || folder;
-    const total = fileList.length;
+    const rule = FOLDERS[f];
+    const all = Array.from(fileList);
+    // Upload what fits and say what was skipped: one stray .HEIC should not
+    // throw away a whole batch of photos.
+    const wrongType = all.filter(x => !rule.types.test(x.name));
+    const tooBig = all.filter(x => rule.types.test(x.name) && x.size > MAX_UPLOAD_BYTES);
+    const list = all.filter(x => !wrongType.includes(x) && !tooBig.includes(x));
+    const names = arr => arr.slice(0, 3).map(x => x.name).join(', ') + (arr.length > 3 ? ` and ${arr.length - 3} more` : '');
+    const skipped = [
+      wrongType.length && `${names(wrongType)} can't go in ${rule.short}. Use ${rule.typeList}.`,
+      tooBig.length && `${names(tooBig)} ${tooBig.length > 1 ? 'are' : 'is'} over the 2 GB limit.`,
+    ].filter(Boolean).join(' ');
+    if (!list.length) { toast_(skipped, true); setInputKey(k => k + 1); return; }
     setUploading(true);
-    setUploadMsg(total > 1 ? `Uploading 0 / ${total}…` : 'Uploading…');
+    setProgress({ sent: 0, total: list.reduce((s, x) => s + x.size, 0), files: list.length, filesDone: 0, startedAt: Date.now() });
     try {
-      const data = await uploadFiles(f, fileList, (done, all) => setUploadMsg(`Uploading ${done} / ${all}…`));
-      toast_(`Uploaded ${data.files.length} file${data.files.length !== 1 ? 's' : ''}`);
-      if (f === folder) await loadFiles(folder);
+      const data = await uploadFiles(f, list, p => setProgress(prev => ({ ...prev, ...p })));
+      const done = `Uploaded ${data.files.length} file${data.files.length !== 1 ? 's' : ''}.`;
+      toast_(skipped ? `${done} Skipped: ${skipped}` : done, !!skipped);
+      if (f === folderRef.current) await loadFiles(f);
       await loadCounts();
     } catch (err) { toast_(err.message, true); }
-    finally { setUploading(false); setUploadMsg(''); setInputKey(k => k + 1); }
+    finally { setUploading(false); setProgress(null); setInputKey(k => k + 1); }
   }
 
   async function deleteNames(names) {
@@ -129,6 +176,16 @@ export default function MediaLibrary() {
   }
 
   const filtered = files.filter(f => f.name.toLowerCase().includes(search.toLowerCase()));
+
+  const pct = progress?.total ? Math.min(100, Math.floor((progress.sent / progress.total) * 100)) : 0;
+  const upEta = (() => {
+    if (!progress || !progress.total) return '';
+    if (progress.sent >= progress.total) return 'saving on the Pi…';
+    const secs = (Date.now() - progress.startedAt) / 1000;
+    if (secs < 3 || progress.sent <= 0) return '';
+    const left = (progress.total - progress.sent) / (progress.sent / secs);
+    return left > 90 ? `about ${Math.round(left / 60)} min left` : `about ${Math.max(5, Math.round(left / 5) * 5)} s left`;
+  })();
   const current = openFile ? files.find(f => f.name === openFile) : null;
   const meta = FOLDERS[folder];
 
@@ -173,7 +230,7 @@ export default function MediaLibrary() {
               <button className="link link-mute" onClick={() => { loadFiles(folder); loadCounts(); }}>Refresh</button>
               {dragOver && <span style={{ color: 'var(--brand-hi)', fontWeight: 600 }}>Drop to upload</span>}
               <label className="b b-key b-sm" style={{ marginLeft: 'auto', cursor: 'pointer' }}>
-                <Icon name="upload" size="sm" />{uploading ? (uploadMsg || 'Uploading…') : 'Upload'}
+                <Icon name="upload" size="sm" />{uploading ? `Uploading ${pct}%` : 'Upload'}
                 <input key={`u-${folder}-${inputKey}`} type="file" multiple accept={meta.accept}
                   style={{ display: 'none' }} disabled={uploading}
                   onChange={e => doUpload(e.target.files)} />
@@ -191,6 +248,23 @@ export default function MediaLibrary() {
             </>
           )}
         </div>
+
+        {uploading && progress && (
+          <div className="upbar">
+            <div className="bar" role="progressbar" aria-label="Upload progress"
+              aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+              <div className="bar-f" style={{ width: `${pct}%`, background: 'var(--brand)' }} />
+            </div>
+            <div className="upbar-t">
+              <span>
+                {progress.files > 1 && `${progress.filesDone} of ${progress.files} files · `}
+                {fmtSize(progress.sent)} of {fmtSize(progress.total)}
+                {upEta && ` · ${upEta}`}
+              </span>
+              <span>Keep this page open</span>
+            </div>
+          </div>
+        )}
 
         {filtered.length === 0 ? (
           <div className="empty">
