@@ -86,7 +86,11 @@ async function uploadOne(folder, file, pacing, onBytes, onNote) {
   if (!init.ok) throw new Error(describeFailure(init.status, init.data));
   const id = init.data.id;
   const abandon = () => callJson('DELETE', `/api/uploads/${id}`).catch(() => {});
-  const lost = 'The Pi restarted during the upload. Please upload the file again.';
+  // The Pi forgets an upload when it restarts, and also discards one that sat
+  // untouched for two hours (a phone left locked, a laptop asleep). From here
+  // the two look the same, so the message names both. Saying only "restarted"
+  // blamed the Pi for what was a long pause.
+  const lost = 'The Pi no longer has this upload: it was paused for over two hours, or the Pi restarted. Please upload the file again.';
 
   // Halve the chunk size after any chunk that got no answer, and never probe
   // back up: a failed probe at a bigger size costs a whole stall window, while
@@ -183,6 +187,7 @@ async function uploadOne(folder, file, pacing, onBytes, onNote) {
   for (let i = 0; i < 10; i++) {
     const done = await callJson('POST', `/api/uploads/${id}/complete`).catch(() => null);
     if (done?.ok) return done.data;
+    if (done?.status === 404) throw new Error(lost);
     if (done && done.status !== 409) { await abandon(); throw new Error(describeFailure(done.status, done.data)); }
     await sleep(1000);
   }
